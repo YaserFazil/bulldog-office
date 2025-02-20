@@ -73,12 +73,16 @@ def get_duration(value):
         return datetime.timedelta(hours=value.hour, minutes=value.minute, seconds=value.second)
     return parse_duration_str(value)
 
-def adjust_work_hours(work_hours_val):
-    """Apply the rule: if work duration > 6 hours, deduct 30 minutes."""
+def adjust_work_hours(work_hours_val, break_val):
+    """Apply the rule: if there is break, deduct 30 minutes."""
     wh = get_duration(work_hours_val)
-    if wh > datetime.timedelta(hours=6):
-        return wh - datetime.timedelta(minutes=30)
-    return wh
+    br = None
+    if pd.notnull(break_val) and str(break_val).strip() not in ["", "-"]:
+        br = get_duration(break_val)
+    
+    # if wh > datetime.timedelta(hours=6):
+    return wh - datetime.timedelta(minutes=30) if br else wh
+    # return wh
 
 def get_time_from_val(val):
     """Return a time object from a value (Timestamp, time, or string)."""
@@ -136,7 +140,7 @@ def compute_hours_holiday(standard_time_val, work_time_minus_break_val, current_
         if wtb_str == "" or wtb_str == "-":
             return get_duration(current_hours_holiday_val)
         if wtb_str == "ATTENTION":
-            return get_duration(current_hours_holiday_val) - get_duration(standard_time_val)
+            return get_duration(current_hours_holiday_val) # - get_duration(standard_time_val)
         diff = compute_difference(standard_time_val, work_time_minus_break_val)
         st_duration = get_duration(standard_time_val)
         wtb_duration = get_duration(work_time_minus_break_val)
@@ -180,7 +184,9 @@ def generate_pdf(data, summary, month, year, filename, extra_cols=[]):
     # Compute summary info:
     check_in_list = []
     check_out_list = []
+    work_count = 0
     break_count = 0
+    total_work_duration = datetime.timedelta(0)
     total_break_duration = datetime.timedelta(0)
     for idx, row in data.iterrows():
         ci = get_time_from_val(row['Check In'])
@@ -190,12 +196,20 @@ def generate_pdf(data, summary, month, year, filename, extra_cols=[]):
         if co:
             check_out_list.append(co)
         br_val = row['Break']
-        if pd.notnull(br_val) and str(br_val).strip() not in ["", "-"]:
+        if pd.notnull(br_val) and str(br_val).strip() not in ["", "-"] and ci and co:
             break_count += 1
             total_break_duration += get_duration(br_val)
+
+        work_hours_val = row['Work Hours']
+        if pd.notnull(work_hours_val) and str(work_hours_val).strip() not in ["", "-"]:
+            work_count += 1
+            total_work_duration += get_duration(work_hours_val)
+
     avg_ci = average_time(check_in_list)
     avg_co = average_time(check_out_list)
+    total_work_duration = total_work_duration - total_break_duration
     formatted_total_break = format_duration(total_break_duration)
+    formatted_total_work = format_duration(total_work_duration)
     
     rem_vac = format_duration(get_duration(summary.get('Remaining Vacation', 0)))
     
@@ -203,6 +217,7 @@ def generate_pdf(data, summary, month, year, filename, extra_cols=[]):
     pdf.cell(0, 10, f"Remaining Vacation Hours: {rem_vac}", ln=1)
     pdf.cell(0, 10, f"Average Check-In: {avg_ci}   Average Check-Out: {avg_co}", ln=1)
     pdf.cell(0, 10, f"Break Summary: {break_count} days with breaks, Total Break Duration: {formatted_total_break}", ln=1)
+    pdf.cell(0, 10, f"Work Summary: {work_count} days worked, Total Work Duration: {formatted_total_work}", ln=1)
 
     # Define base table headers and widths.
     headers = ["Date", "Day", "Check In", "Check Out", "Work Hours", "Break"]
@@ -228,7 +243,8 @@ def generate_pdf(data, summary, month, year, filename, extra_cols=[]):
         check_out = format_time_value(row['Check Out']) if pd.notnull(row['Check Out']) else "-"
         # Here, "Work Hours" is our adjusted value (already computed via adjust_work_hours).
         raw_work = row.get('Work Hours', None)
-        adjusted_wh = adjust_work_hours(raw_work) if pd.notnull(raw_work) else datetime.timedelta(0)
+        raw_break = row.get('Break', None)
+        adjusted_wh = adjust_work_hours(raw_work, raw_break) if pd.notnull(raw_work) else datetime.timedelta(0)
         work_hours_str = format_duration(adjusted_wh)
         break_str = format_time_value(row['Break']) if pd.notnull(row['Break']) else "-"
         
