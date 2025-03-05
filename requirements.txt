@@ -2,3 +2,7 @@ pandas==2.2.3
 openpyxl==3.1.5
 fpdf==1.7.2
 streamlit==1.42.0
+streamlit-calendar==1.2.1
+reportlab==4.3.1
+python-dotenv==1.0.1
+pymongo==4.11.2
