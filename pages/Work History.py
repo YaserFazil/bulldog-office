@@ -51,16 +51,11 @@ def main_work():
                         standard_time_decimal = hhmm_to_decimal(first_row_standard_time)
                         if work_time_decimal < standard_time_decimal:
                             # Calculate the difference and add it to "Holiday Hours"
-                            st.write(f"Work time: {work_time_decimal}")
-                            st.write(f"Standard time: {standard_time_decimal}")
                             diff = standard_time_decimal - work_time_decimal
-                            st.write(f"Diff: {diff}")
                             holiday_hours_value = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
                             holiday_hours_decimal = hhmm_to_decimal(holiday_hours_value)
-                            st.write(f"First holiday hour: {holiday_hours_value}")
 
                             holiday_hours_value = holiday_hours_decimal + diff
-                            st.write(f"Here is after diff {holiday_hours_value}")
                             holiday_hours = decimal_hours_to_hhmmss(holiday_hours_value)
                         # elif work_time_decimal < standard_time_decimal and st.session_state.get("prev_holiday_hour") is None:
                         #     diff = standard_time_decimal
