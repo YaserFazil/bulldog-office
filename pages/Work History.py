@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
-def main():
+def main_work():
     st.title("Work History Records")
     
     all_usernames = get_users()
@@ -395,4 +395,4 @@ def main():
     
     
 if __name__ == "__main__":
-    main()
+    main_work()
