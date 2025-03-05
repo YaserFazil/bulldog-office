@@ -77,7 +77,7 @@ def main_work():
                 # Holiday Hours: initial total holiday entitlement for the year.
                 holiday_hours = st.text_input("**Holiday Hours**", value=holiday_hours)
                 holiday_hours_str = holiday_hours
-                holiday_hours = int(hhmm_to_decimal(holiday_hours))
+                holiday_hours = hhmm_to_decimal(holiday_hours)
             with col4:
                 standard_work_hours = st.text_input("**Standard Work Hours**", value="04:00")
                 standard_work_hours_str = standard_work_hours
