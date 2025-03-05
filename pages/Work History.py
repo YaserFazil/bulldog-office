@@ -37,11 +37,11 @@ def main():
             st.session_state["prev_holiday_hour"] = prev_holiday_hour
             st.session_state["edited_work_history_data"] = work_history
             st.rerun()
-        if not st.session_state.get("edited_work_history_data").empty:
+        if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
             col3, col4, col5, col6 = st.columns(4)
             with col3:
-                if "edited_work_history_data" in st.session_state and "Hours Holiday" in st.session_state["edited_work_history_data"]:
+                if "Hours Holiday" in st.session_state["edited_work_history_data"]:
                     first_row_holiday = st.session_state["edited_work_history_data"]["Holiday"][0] if "Holiday" in st.session_state["edited_work_history_data"] and st.session_state["edited_work_history_data"]["Holiday"][0] else ""
                     if first_row_holiday == "" or not first_row_holiday or pd.isna(first_row_holiday):  # Check if "Holiday" column is empty
                         first_row_work_time = st.session_state["edited_work_history_data"]["Work Time"][0] if "Work Time" in st.session_state["edited_work_history_data"] and not pd.isna(st.session_state["edited_work_history_data"]["Work Time"][0]) else "00:00"
@@ -49,13 +49,19 @@ def main():
                         
                         work_time_decimal = hhmm_to_decimal(first_row_work_time)
                         standard_time_decimal = hhmm_to_decimal(first_row_standard_time)
-                        if work_time_decimal < standard_time_decimal and st.session_state.get("prev_holiday_hour") is not None:
+                        if work_time_decimal < standard_time_decimal:
                             # Calculate the difference and add it to "Holiday Hours"
                             diff = standard_time_decimal - work_time_decimal
                             holiday_hours_value = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
                             holiday_hours_decimal = hhmm_to_decimal(holiday_hours_value)
                             holiday_hours_value = holiday_hours_decimal + diff
                             holiday_hours = f"{int(holiday_hours_value)}:{int((holiday_hours_value - int(holiday_hours_value)) * 60):02d}"
+                        # elif work_time_decimal < standard_time_decimal and st.session_state.get("prev_holiday_hour") is None:
+                        #     diff = standard_time_decimal
+                        #     holiday_hours_value = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
+                        #     holiday_hours_decimal = hhmm_to_decimal(holiday_hours_value)
+                        #     holiday_hours_value = holiday_hours_decimal + diff
+                        #     holiday_hours = f"{int(holiday_hours_value)}:{int((holiday_hours_value - int(holiday_hours_value)) * 60):02d}"
                         else:
                             holiday_hours = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
                     else:
