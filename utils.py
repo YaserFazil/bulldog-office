@@ -180,9 +180,37 @@ def compute_time_difference(work_time, standard_time):
     diff_minutes = diff % 60
     return f"{sign}{diff_hours:02d}:{diff_minutes:02d}"
 
-
-
 def fetch_employee_work_history(user_id, start_date=None, end_date=None):
+    """Fetch work history for the selected user within a date range, 
+    also retrieves 'Hours Holiday' from the record before start_date if available."""
+    query = {"employee_id": str(user_id)}
+    
+    # Fetch the record before the start_date
+    previous_hours_holiday = None
+    if start_date:
+        prev_query = {"employee_id": str(user_id), "Date": {"$lt": datetime.combine(start_date, datetime.min.time())}}
+        prev_record = work_history_collection.find(prev_query).sort("Date", DESCENDING).limit(1)
+        prev_record = list(prev_record)
+        if prev_record and "Hours Holiday" in prev_record[0] and prev_record[0]["Hours Holiday"]:
+            previous_hours_holiday = prev_record[0]["Hours Holiday"]
+    
+    # Add date filtering if start_date and end_date are provided
+    if start_date and end_date:
+        query["Date"] = {"$gte": datetime.combine(start_date, datetime.min.time()), 
+                         "$lte": datetime.combine(end_date, datetime.max.time())}
+    
+    work_history = list(work_history_collection.find(query).sort("Date", ASCENDING))
+    
+    if work_history:
+        work_history = pd.DataFrame(work_history) 
+        work_history['Date'] = pd.to_datetime(work_history['Date']).dt.date
+        work_history["IN"] = work_history["IN"].replace({np.nan: None}).astype("object").values
+        work_history["OUT"] = work_history["OUT"].replace({np.nan: None}).astype("object").values
+        return work_history, previous_hours_holiday
+    
+    return pd.DataFrame(), previous_hours_holiday
+
+def fetch_employee_work_history_old(user_id, start_date=None, end_date=None):
     """Fetch work history for the selected user within a date range."""
     query = {"employee_id": str(user_id)}
     # Add date filtering if start_date and end_date are provided

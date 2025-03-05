@@ -45,7 +45,7 @@ def main():
             all_usernames = get_users(employee_name)
             selected_username = st.selectbox("Selected Employee", all_usernames)
         user_id, full_name = get_user_id(selected_username)
-        old_work_history = fetch_employee_work_history(user_id)
+        old_work_history, prev_holiday_hour = fetch_employee_work_history(user_id)
         latest_holiday_hour = old_work_history["Hours Holiday"].iloc[-1] if "Hours Holiday" in old_work_history and old_work_history["Hours Holiday"].iloc[-1] else "00:00"
         col3, col4, col5, col6 = st.columns(4)
         with col3:
