@@ -37,7 +37,7 @@ def main():
         col3, col4, col5, col6 = st.columns(4)
         with col3:
             # Holiday Hours: initial total holiday entitlement for the year.
-            holiday_hours = st.text_input("**Holiday Hours**", value=st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "edited_work_history_data" in st.session_state and "Hours Holiday" in st.session_state["edited_work_history_data"] and st.session_state["edited_work_history_data"]["Hours Holiday"][0] else "00:00")
+            holiday_hours = st.text_input("**Holiday Hours**", value=st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "edited_work_history_data" in st.session_state and "Hours Holiday" in st.session_state["edited_work_history_data"] and st.session_state["edited_work_history_data"]["Hours Holiday"][0] else work_history["Hours Holiday"][0] if "Hours Holiday" in work_history and work_history["Hours Holiday"][0] else "00:00")
             holiday_hours_str = holiday_hours
             holiday_hours = int(hhmm_to_decimal(holiday_hours))
         with col4:
