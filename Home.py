@@ -16,20 +16,40 @@ def main():
     def reset_file():
         if "edited_data" in st.session_state:
             st.session_state.pop("edited_data")
-    
+            st.session_state.pop("pay_period_from")
+            st.session_state.pop("pay_period_to")
+            st.session_state.pop("employee_name")
+
+
     uploaded_file = st.file_uploader("Upload your timecard CSV", type=["csv"], on_change=reset_file)
     
-    if uploaded_file:
-        file_contents = uploaded_file.getvalue().decode("utf-8")
-        file_buffer = io.StringIO(file_contents)
+    if uploaded_file or "edited_data" in st.session_state:
+        if not uploaded_file:
+            uploaded_df = pd.DataFrame(st.session_state["edited_data"])
+
+            # Convert all columns to string to avoid float-related errors
+            uploaded_df = uploaded_df.astype(str)  
+
+            # Create an in-memory file buffer
+            file_buffer = io.StringIO()
+            uploaded_df.to_csv(file_buffer, index=False)
+            pay_period_from = st.session_state["pay_period_from"]
+            pay_period_to = st.session_state["pay_period_to"]
+            employee_name = st.session_state["employee_name"]
+        else:
+            file_contents = uploaded_file.getvalue().decode("utf-8")
+            file_buffer = io.StringIO(file_contents)
     
-        # --- First Read: Extract Header Information ---
-        header_df = pd.read_csv(file_buffer, header=None, nrows=3)
-        pay_period_str = header_df.iloc[1, 3]  # e.g., "20250101-20250131"
-        pay_period_from_str, pay_period_to_str = pay_period_str.split("-")
-        pay_period_from = pd.to_datetime(pay_period_from_str, format="%Y%m%d", errors="coerce").date()
-        pay_period_to = pd.to_datetime(pay_period_to_str, format="%Y%m%d", errors="coerce").date()
-        employee_name = header_df.iloc[2, 3]  # e.g., "Osman Kocabal (4)"
+            # --- First Read: Extract Header Information ---
+            header_df = pd.read_csv(file_buffer, header=None, nrows=3)
+            pay_period_str = header_df.iloc[1, 3]  # e.g., "20250101-20250131"
+            pay_period_from_str, pay_period_to_str = pay_period_str.split("-")
+            pay_period_from = pd.to_datetime(pay_period_from_str, format="%Y%m%d", errors="coerce").date()
+            st.session_state["pay_period_from"] = pay_period_from
+            pay_period_to = pd.to_datetime(pay_period_to_str, format="%Y%m%d", errors="coerce").date()
+            st.session_state["pay_period_to"] = pay_period_to
+            employee_name = header_df.iloc[2, 3]  # e.g., "Osman Kocabal (4)"
+            st.session_state["employee_name"] = employee_name
     
         # --- Display Header Info in Widgets ---
         st.subheader("Timecard Report")
@@ -47,19 +67,21 @@ def main():
         user_id, full_name = get_user_id(selected_username)
         old_work_history, prev_holiday_hour = fetch_employee_work_history(user_id)
         latest_holiday_hour = old_work_history["Hours Holiday"].iloc[-1] if "Hours Holiday" in old_work_history and old_work_history["Hours Holiday"].iloc[-1] else "00:00"
-        col3, col4, col5, col6 = st.columns(4)
+        col3, col4, col5, col6, colmultip = st.columns(5)
         with col3:
             # Holiday Hours: initial total holiday entitlement for the year.
             holiday_hours = st.text_input("**Holiday Hours**", value=latest_holiday_hour)
             holiday_hours_str = holiday_hours
             holiday_hours = int(hhmm_to_decimal(holiday_hours))
         with col4:
-            standard_work_hours = st.text_input("**Standard Work Hours**", value="04:00")
+            standard_work_hours = st.text_input("**Stand Work Hours**", value="04:00")
             standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
         with col5:
             break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:30")
         with col6:
             break_hours = st.text_input("**Break Hour(s)**", value="00:30")
+        with colmultip:
+            multiplication_input = st.number_input("**Multiplication**", value=1.0)
     
         # --- Second Read: Extract the Main Data ---
         file_buffer.seek(0)
@@ -72,6 +94,8 @@ def main():
         data_df['Break'] = None
         data_df['Standard Time'] = decimal_hours_to_hhmmss(standard_work_hours)
         data_df['Difference'] = None
+        data_df['Difference (Decimal)'] = None
+        data_df['Multiplication'] = multiplication_input
         data_df['Holiday'] = None
         data_df['Hours Holiday'] = None
 
@@ -118,6 +142,11 @@ def main():
                 # Both columns are in "hh:mm" string format.
                 updated_df["Difference"] = updated_df.apply(
                     lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", "")),
+                    axis=1
+                )
+
+                updated_df["Difference (Decimal)"] = updated_df.apply(
+                    lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), False),
                     axis=1
                 )
 

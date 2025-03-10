@@ -115,6 +115,8 @@ def main_work():
                     "Break",
                     "Standard Time",
                     "Difference",
+                    "Difference (Decimal)",
+                    "Multiplication",
                     "Holiday",
                     "Hours Holiday",
                     "employee_id",

@@ -127,6 +127,8 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates):
             worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
             # Reward only if employee worked.
             if worked > 0:
+                multiplication = float(row["Multiplication"])
+                worked = worked * multiplication
                 running_balance = max(0, running_balance + worked)
                 running_balance_str = decimal_hours_to_hhmmss(running_balance)
         else:
@@ -139,6 +141,14 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates):
                 not_worked_hours = standard_work_hours - worked
                 running_balance = max(0, running_balance - not_worked_hours)
                 running_balance_str = decimal_hours_to_hhmmss(running_balance)
+            elif worked > standard_work_hours:
+                # Employee worked overtime, add the extra hours from "Difference (Decimal)"
+                extra_hours = float(row["Difference (Decimal)"])  # Ensure it's a float
+                multiplication = float(row["Multiplication"])
+                extra_hours = extra_hours * multiplication
+                running_balance = max(0, running_balance + extra_hours)   # Add overtime to balance
+                running_balance_str = decimal_hours_to_hhmmss(running_balance)
+
 
         balance_list.append(running_balance_str)
     df_sorted["Hours Holiday"] = balance_list
@@ -150,7 +160,7 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates):
 # Returns a string in "hh:mm" format, with a "-" sign if negative.
 # If either input is missing or invalid, returns an empty string.
 # ----------------------
-def compute_time_difference(work_time, standard_time):
+def compute_time_difference(work_time, standard_time, default=True):
     """
     Compute the difference between work_time and standard_time,
     both provided as strings in "hh:mm" format.
@@ -178,7 +188,10 @@ def compute_time_difference(work_time, standard_time):
     # Convert minutes back to hours and minutes.
     diff_hours = diff // 60
     diff_minutes = diff % 60
-    return f"{sign}{diff_hours:02d}:{diff_minutes:02d}"
+    if default:
+        return f"{sign}{diff_hours:02d}:{diff_minutes:02d}"
+    else:
+        return diff / 60 if not sign else -diff / 60
 
 def fetch_employee_work_history(user_id, start_date=None, end_date=None):
     try:
