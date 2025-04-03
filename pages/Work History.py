@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import get_users, get_user_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss
+from utils import get_users, get_user_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -14,7 +14,7 @@ def main_work():
     
     if selected_username:
         user_id, full_name = get_user_id(selected_username)
-        work_history, prev_holiday_hour = fetch_employee_work_history(user_id)
+        work_history, prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
         if work_history.empty:
             st.warning("No work history found for this employee.")
             return
@@ -33,13 +33,24 @@ def main_work():
             period_loaded = st.button("Load selected period")
         if period_loaded:
             # # Fetch filtered data based on user selection
-            work_history, prev_holiday_hour = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
+            work_history, prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
+            latest_holiday_day = previous_holiday_days if previous_holiday_days else int(work_history["Holiday Days"].iloc[0]) if "Holiday Days" in work_history and work_history["Holiday Days"].iloc[0] else int(0)
+            latest_hours_overtime_left = previous_hours_overtime if previous_hours_overtime else work_history["Hours Overtime Left"].iloc[0] if "Hours Overtime Left" in work_history and work_history["Hours Overtime Left"].iloc[0] else "00:00"
+            st.session_state["latest_holiday_days_left"] = latest_holiday_day
+            st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
             st.session_state["prev_holiday_hour"] = prev_holiday_hour
             st.session_state["edited_work_history_data"] = work_history
             st.rerun()
         if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
-            col3, col4, col5, col6 = st.columns(4)
+            holiday_day_col, hours_overtime_col, col3 = st.columns(3)
+            col4, col5, col6 = st.columns(3)
+            with holiday_day_col:
+                holiday_days = st.number_input("**Holiday Days Left:**", value=st.session_state["latest_holiday_days_left"])
+            with hours_overtime_col:
+                hours_overtime = st.text_input("**Hours Overtime:**", value=st.session_state["latest_hours_overtime_left"])
+                hours_overtime_str = hours_overtime
+                hours_overtime = int(hhmm_to_decimal(hours_overtime))
             with col3:
                 if "Hours Holiday" in st.session_state["edited_work_history_data"]:
                     first_row_holiday = st.session_state["edited_work_history_data"]["Holiday"][0] if "Holiday" in st.session_state["edited_work_history_data"] and st.session_state["edited_work_history_data"]["Holiday"][0] else ""
@@ -118,6 +129,8 @@ def main_work():
                     "Difference (Decimal)",
                     "Multiplication",
                     "Holiday",
+                    "Holiday Days",
+                    "Hours Overtime Left",
                     "Hours Holiday",
                     "employee_id",
                     "_id"
@@ -141,16 +154,27 @@ def main_work():
                     # Calculate the difference between "Work Time" and "Standard Time"
                     # Both columns are in "hh:mm" string format.
                     updated_df["Difference"] = updated_df.apply(
-                        lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", "")),
+                        lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), row.get("Holiday", ""), True),
                         axis=1
                     )
-
+                    updated_df["Difference (Decimal)"] = updated_df.apply(
+                        lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), row.get("Holiday", ""), False),
+                        axis=1
+                    )
                     st.session_state["edited_work_history_data"] = updated_df
                     st.rerun()
             
             with col2:
                 # --- New: Calculate Holiday Hours Running Balance ---
-                if st.button("Calculate Holiday Hours", use_container_width=True):
+                if st.button("Calculate Holiday", use_container_width=True):
+                    # Load holiday events from the JSON file.
+                    calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
+
+                    # Convert the keys from string to date objects.
+                    calendar_events_date = {
+                        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                        for date_str, event in calendar_events.items()
+                    }
                     df = safe_convert_to_df(edited_work_history_data).copy()
                     
                     # Helper function to ensure the 'Holiday' column has a valid, non-empty value.
@@ -165,7 +189,7 @@ def main_work():
                     )
                     
                     # Compute running holiday hours using the extracted holiday dates.
-                    df = compute_running_holiday_hours(df, holiday_hours, holiday_event_dates)
+                    df = compute_running_holiday_hours(df, holiday_hours, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
                     
                     st.session_state["edited_work_history_data"] = df
                     st.success("Holiday hours calculated and updated!")
@@ -180,7 +204,7 @@ def main_work():
                     if work_history_created["success"] == True:
                         st.success("Successfully Saved Data!")
                         
-                        st.session_state["edited_work_history_data"], prev_holiday_hour = fetch_employee_work_history(user_id)
+                        st.session_state["edited_work_history_data"], prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
                         st.rerun()
                     else:
                         st.error(f"Couldn't save work history: {work_history_created}")
@@ -341,6 +365,7 @@ def main_work():
             # Add a title with the custom style.
             elements.append(Paragraph("Work Hours Summary", summary_title_style))
             elements.append(Spacer(1, 20))
+            updated_df_pdf = safe_convert_to_df(edited_work_history_data).copy()
             
             # Build a summary table with two columns: Metric and Value.
             summary_data = [
@@ -349,6 +374,8 @@ def main_work():
                 ["Pay Period", pay_period],
                 ["Hours worked", hours_worked],
                 ["Hours expected to work", hours_expected],
+                ["Hours Overtime", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
+                ["Holiday Days Left", updated_df_pdf["Holiday Days"].iloc[-1]],
                 ["Holiday hours consumed", f"{holiday_consumed} / {holiday_hours_str}"],
                 ["Holiday hours left", holiday_hours_left_str],
                 ["Number of breaks", str(breaks_count)],

@@ -65,23 +65,36 @@ def main():
             all_usernames = get_users(employee_name)
             selected_username = st.selectbox("Selected Employee", all_usernames)
         user_id, full_name = get_user_id(selected_username)
-        old_work_history, prev_holiday_hour = fetch_employee_work_history(user_id)
+        old_work_history, prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
         latest_holiday_hour = old_work_history["Hours Holiday"].iloc[-1] if "Hours Holiday" in old_work_history and old_work_history["Hours Holiday"].iloc[-1] else "00:00"
-        col3, col4, col5, col6, colmultip = st.columns(5)
+        latest_holiday_day = previous_holiday_days if previous_holiday_days else int(old_work_history["Holiday Days"].iloc[-1]) if "Holiday Days" in old_work_history and old_work_history["Holiday Days"].iloc[-1] else int(0)
+        latest_hours_overtime = previous_hours_overtime if previous_hours_overtime else old_work_history["Hours Overtime Left"].iloc[-1] if "Hours Overtime Left" in old_work_history and old_work_history["Hours Overtime Left"].iloc[-1] else "00:00"
+        col3, col4, col6, colstnhr = st.columns(4)
         with col3:
+            holiday_days = st.number_input("**Holiday Days**", value=latest_holiday_day)
+
+        with col4:
+            hours_overtime = st.text_input("**Hours Overtime**", value=latest_hours_overtime)
+            hours_overtime_str = hours_overtime
+            hours_overtime = int(hhmm_to_decimal(hours_overtime))
+                        
+        with col6:
             # Holiday Hours: initial total holiday entitlement for the year.
             holiday_hours = st.text_input("**Holiday Hours**", value=latest_holiday_hour)
             holiday_hours_str = holiday_hours
             holiday_hours = int(hhmm_to_decimal(holiday_hours))
-        with col4:
-            standard_work_hours = st.text_input("**Stand Work Hours**", value="04:00")
+        with colstnhr:
+            standard_work_hours = st.text_input("**Standard Work Hours**", value="04:00")
             standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
-        with col5:
+
+        colu1, colu2, colu3 = st.columns(3)
+        with colu1:
             break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:30")
-        with col6:
+        with colu2:
             break_hours = st.text_input("**Break Hour(s)**", value="00:30")
-        with colmultip:
+        with colu3:
             multiplication_input = st.number_input("**Multiplication**", value=1.0)
+
     
         # --- Second Read: Extract the Main Data ---
         file_buffer.seek(0)
@@ -96,7 +109,9 @@ def main():
         data_df['Difference'] = None
         data_df['Difference (Decimal)'] = None
         data_df['Multiplication'] = multiplication_input
+        data_df['Hours Overtime Left'] = None 
         data_df['Holiday'] = None
+        data_df['Holiday Days'] = None
         data_df['Hours Holiday'] = None
 
         # Load holiday events from the JSON file.
@@ -131,6 +146,7 @@ def main():
         with col10:
             if st.button("Calculate Work Duration", use_container_width=True):
                 updated_df = safe_convert_to_df(edited_data).copy()
+                updated_df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
                 updated_df[" Daily Total"] = updated_df.apply(
                     lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
                 )
@@ -141,12 +157,12 @@ def main():
                 # Calculate the difference between "Work Time" and "Standard Time"
                 # Both columns are in "hh:mm" string format.
                 updated_df["Difference"] = updated_df.apply(
-                    lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", "")),
+                    lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), row.get("Holiday", ""), True),
                     axis=1
                 )
 
                 updated_df["Difference (Decimal)"] = updated_df.apply(
-                    lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), False),
+                    lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), row.get("Holiday", ""), False),
                     axis=1
                 )
 
@@ -155,7 +171,7 @@ def main():
 
         with col11:
             # --- New: Calculate Holiday Hours Running Balance ---
-            if st.button("Calculate Holiday Hours", use_container_width=True):
+            if st.button("Calculate Holiday", use_container_width=True):
                 df = safe_convert_to_df(edited_data).copy()
                 
                 # Helper function to ensure the 'Holiday' column has a valid, non-empty value.
@@ -170,7 +186,7 @@ def main():
                 )
                 
                 # Compute running holiday hours using the extracted holiday dates.
-                df = compute_running_holiday_hours(df, holiday_hours, holiday_event_dates)
+                df = compute_running_holiday_hours(df, holiday_hours, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
                 
                 st.session_state["edited_data"] = df
                 st.success("Holiday hours calculated and updated!")
@@ -331,6 +347,7 @@ def main():
         # Add a title with the custom style.
         elements.append(Paragraph("Work Hours Summary", summary_title_style))
         elements.append(Spacer(1, 20))
+        updated_df_pdf = safe_convert_to_df(edited_data).copy()
         
         # Build a summary table with two columns: Metric and Value.
         summary_data = [
@@ -339,6 +356,8 @@ def main():
             ["Pay Period", pay_period],
             ["Hours worked", hours_worked],
             ["Hours expected to work", hours_expected],
+            ["Hours Overtime", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
+            ["Holiday Days Left", updated_df_pdf["Holiday Days"].iloc[-1]],
             ["Holiday hours consumed", f"{holiday_consumed} / {holiday_hours_str}"],
             ["Holiday hours left", holiday_hours_left_str],
             ["Number of breaks", str(breaks_count)],
