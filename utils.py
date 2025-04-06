@@ -11,9 +11,18 @@ from employee_manager import *
 # 1. Helper: decimal hours to HH:MM:SS
 # ----------------------
 def decimal_hours_to_hhmmss(decimal_hours):
+    negative = decimal_hours < 0
+    decimal_hours = abs(decimal_hours)
+
     hours = int(decimal_hours)
     mins = int(round((decimal_hours - hours) * 60))
-    return f"{hours:02d}:{mins:02d}"
+
+    if mins == 60:  # Handle rounding up to next hour
+        mins = 0
+        hours += 1
+
+    formatted_time = f"{hours:02d}:{mins:02d}"
+    return f"-{formatted_time}" if negative else formatted_time
 
 # ----------------------
 # 2. Compute work duration from check-in and check-out strings
@@ -70,15 +79,22 @@ def adjust_work_time_and_break(daily_total_str, break_str, break_hour_rule, brea
 def hhmm_to_decimal(time_str):
     if not time_str:
         return 0
+
+    negative = time_str.startswith("-")  # Check for a negative sign
+    time_str = time_str.lstrip("-")  # Remove the negative sign for processing
+
     parts = time_str.split(":")
+    
     if len(parts) == 3:
-        hours, minutes, seconds = parts
-        return int(hours) + int(minutes)/60 + int(seconds)/3600
+        hours, minutes, seconds = map(int, parts)
+        decimal = hours + minutes / 60 + seconds / 3600
     elif len(parts) == 2:
-        hours, minutes = parts
-        return int(hours) + int(minutes)/60
+        hours, minutes = map(int, parts)
+        decimal = hours + minutes / 60
     else:
         return 0
+
+    return -decimal if negative else decimal
 
 # ----------------------
 # 5. Helper: Convert a dict (from st.data_editor) safely to a DataFrame
@@ -115,12 +131,10 @@ def is_valid_holiday(value):
 # ----------------------
 # 7. New Helper: Compute a running holiday balance row-by-row
 # ----------------------
-def compute_running_holiday_hours(df, initial_holiday, holiday_dates, official_holidays, holiday_days_count, initial_overtime="00:00"):
+def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_days_count, initial_overtime="00:00"):
     # Ensure DataFrame is sorted by Date ascending.
     df_sorted = df.sort_values(by="Date").copy()
-    running_balance = initial_holiday
     running_overtime = hhmm_to_decimal(initial_overtime) if initial_overtime != "00:00" else df_sorted["Difference (Decimal)"].iloc[0]
-    balance_list = []
     overtime_list = []
     holiday_days = []
     remaining_holiday_days = holiday_days_count if holiday_days_count else 0  # Initialize holiday days count
@@ -129,7 +143,6 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates, official_h
     for idx, row in df_sorted.iterrows():
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
         row_date_obj = pd.to_datetime(row["Date"]).date()
-        running_balance_str = decimal_hours_to_hhmmss(running_balance)
         
         # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
         if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
@@ -149,11 +162,9 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates, official_h
             if worked > 0:
                 multiplication = float(row["Multiplication"])
                 worked = worked * multiplication
-                running_balance = max(0, running_balance + worked)
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
                 # Sum extra hours to overtime balance
                 if running_overtime is not None and idx > 0 or initial_overtime != "00:00":
-                    running_overtime = max(0, running_overtime + worked)
+                    running_overtime = running_overtime + worked
                     running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         else:
             work_str = row["Work Time"]
@@ -162,82 +173,30 @@ def compute_running_holiday_hours(df, initial_holiday, holiday_dates, official_h
             
             if worked < standard_work_hours:
                 not_worked_hours = standard_work_hours - worked
-                running_balance = max(0, running_balance - not_worked_hours)
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
                 #  Unsum not worked hours from overtime balance
                 if running_overtime is not None:
-                    running_overtime = max(0, running_overtime - not_worked_hours)
+                    running_overtime = running_overtime - not_worked_hours
                     running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
             elif worked > standard_work_hours:
                 extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
-                running_balance = max(0, running_balance + extra_hours)
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
                 
                 # Sum extra hours to overtime balance
                 if running_overtime is not None:
-                    running_overtime = max(0, running_overtime + extra_hours)
+                    running_overtime = running_overtime + extra_hours
                     running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         
         # Decrease holiday days count if the row's date is not in official_holidays and "Holiday" column is not empty
         if row_date_obj not in official_holidays and row["Holiday"] not in ["", None] and is_valid_holiday(row["Holiday"]):
             remaining_holiday_days = max(0, remaining_holiday_days - 1)
-        # elif row_date not in holiday_dates and not is_valid_holiday(row["Work Time"]):
-        #     # If the row's date is not a holiday and the "Work Time" is empty, then decrease holiday days
-        #     remaining_holiday_days = max(0, remaining_holiday_days - 1)
         
         holiday_days.append(remaining_holiday_days)
-        balance_list.append(running_balance_str)
         overtime_list.append(running_overtime_str)
     
-    df_sorted["Hours Holiday"] = balance_list
     df_sorted["Hours Overtime Left"] = overtime_list
     df_sorted["Holiday Days"] = holiday_days
     
     return df_sorted
 
-
-def compute_running_holiday_hours_old(df, initial_holiday, holiday_dates):
-    # Ensure DataFrame is sorted by Date ascending.
-    df_sorted = df.sort_values(by="Date").copy()
-    running_balance = initial_holiday
-    balance_list = []
-    # Process each row in chronological order.
-    for idx, row in df_sorted.iterrows():
-        row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
-        running_balance_str = decimal_hours_to_hhmmss(running_balance)
-        # If this row is a holiday event date...
-        if row_date in holiday_dates:
-            work_str = row["Work Time"]
-            # Convert work time to decimal hours.
-            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-            # Reward only if employee worked.
-            if worked > 0:
-                multiplication = float(row["Multiplication"])
-                worked = worked * multiplication
-                running_balance = max(0, running_balance + worked)
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
-        else:
-            work_str = row["Work Time"]
-            # Convert work time to decimal hours.
-            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-            # Deduct if employee not worked enough
-            standard_work_hours = hhmm_to_decimal(row["Standard Time"])
-            if worked < standard_work_hours:
-                not_worked_hours = standard_work_hours - worked
-                running_balance = max(0, running_balance - not_worked_hours)
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
-            elif worked > standard_work_hours:
-                # Employee worked overtime, add the extra hours from "Difference (Decimal)"
-                extra_hours = float(row["Difference (Decimal)"])  # Ensure it's a float
-                multiplication = float(row["Multiplication"])
-                extra_hours = extra_hours * multiplication
-                running_balance = max(0, running_balance + extra_hours)   # Add overtime to balance
-                running_balance_str = decimal_hours_to_hhmmss(running_balance)
-
-
-        balance_list.append(running_balance_str)
-    df_sorted["Hours Holiday"] = balance_list
-    return df_sorted
 
 # ----------------------
 # 8. Compute the difference between work_time and standard_time,
@@ -298,18 +257,17 @@ def fetch_employee_work_history(user_id, start_date=None, end_date=None):
         query = {"employee_id": str(user_id)}
         
         # Fetch the record before the start_date
-        previous_hours_holiday = None
         previous_hours_overtime = None
         previous_holiday_days = None
         if start_date:
             prev_query = {"employee_id": str(user_id), "Date": {"$lt": datetime.combine(start_date, datetime.min.time())}}
             prev_record = work_history_collection.find(prev_query).sort("Date", DESCENDING).limit(1)
             prev_record = list(prev_record)
-            if prev_record and "Hours Holiday" in prev_record[0] and prev_record[0]["Hours Holiday"]:
-                previous_hours_holiday = prev_record[0]["Hours Holiday"]
+            if prev_record and "Hours Overtime Left" in prev_record[0] and prev_record[0]["Hours Overtime Left"]:
                 previous_hours_overtime = prev_record[0]["Hours Overtime Left"]
+                
+            if prev_record and "Holiday Days" in prev_record[0] and prev_record[0]["Holiday Days"]:
                 previous_holiday_days = prev_record[0]["Holiday Days"]
-        
         # Add date filtering if start_date and end_date are provided
         if start_date and end_date:
             query["Date"] = {"$gte": datetime.combine(start_date, datetime.min.time()), 
@@ -322,25 +280,9 @@ def fetch_employee_work_history(user_id, start_date=None, end_date=None):
             work_history['Date'] = pd.to_datetime(work_history['Date']).dt.date
             work_history["IN"] = work_history["IN"].replace({np.nan: None}).astype("object").values
             work_history["OUT"] = work_history["OUT"].replace({np.nan: None}).astype("object").values
-            return work_history, previous_hours_holiday, previous_hours_overtime, previous_holiday_days
+            return work_history, previous_hours_overtime, previous_holiday_days
         
-        return pd.DataFrame(), previous_hours_holiday, previous_hours_overtime, previous_holiday_days
+        return pd.DataFrame(), previous_hours_overtime, previous_holiday_days
     except Exception as e:
         st.error(f"Something went wrong while fetching work history: {e}")
-        return None, None, None, None
-
-def fetch_employee_work_history_old(user_id, start_date=None, end_date=None):
-    """Fetch work history for the selected user within a date range."""
-    query = {"employee_id": str(user_id)}
-    # Add date filtering if start_date and end_date are provided
-    if start_date and end_date:
-        query["Date"] = {"$gte": datetime.combine(start_date, datetime.min.time()), 
-                         "$lte": datetime.combine(end_date, datetime.max.time())}
-    work_history = list(work_history_collection.find(query).sort("Date", ASCENDING))
-    if work_history:
-        work_history = pd.DataFrame(work_history) 
-        work_history['Date'] = pd.to_datetime(work_history['Date']).dt.date
-        work_history["IN"] = work_history["IN"].replace({np.nan: None}).astype("object").values
-        work_history["OUT"] = work_history["OUT"].replace({np.nan: None}).astype("object").values
-        return work_history
-    return pd.DataFrame()
+        return None, None, None

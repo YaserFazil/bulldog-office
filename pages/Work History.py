@@ -14,7 +14,7 @@ def main_work():
     
     if selected_username:
         user_id, full_name = get_user_id(selected_username)
-        work_history, prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
+        work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
         if work_history.empty:
             st.warning("No work history found for this employee.")
             return
@@ -33,17 +33,16 @@ def main_work():
             period_loaded = st.button("Load selected period")
         if period_loaded:
             # # Fetch filtered data based on user selection
-            work_history, prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
+            work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
             latest_holiday_day = previous_holiday_days if previous_holiday_days else int(work_history["Holiday Days"].iloc[0]) if "Holiday Days" in work_history and work_history["Holiday Days"].iloc[0] else int(0)
             latest_hours_overtime_left = previous_hours_overtime if previous_hours_overtime else work_history["Hours Overtime Left"].iloc[0] if "Hours Overtime Left" in work_history and work_history["Hours Overtime Left"].iloc[0] else "00:00"
             st.session_state["latest_holiday_days_left"] = latest_holiday_day
             st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
-            st.session_state["prev_holiday_hour"] = prev_holiday_hour
             st.session_state["edited_work_history_data"] = work_history
             st.rerun()
         if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
-            holiday_day_col, hours_overtime_col, col3 = st.columns(3)
+            holiday_day_col, hours_overtime_col = st.columns(2)
             col4, col5, col6 = st.columns(3)
             with holiday_day_col:
                 holiday_days = st.number_input("**Holiday Days Left:**", value=st.session_state["latest_holiday_days_left"])
@@ -51,41 +50,9 @@ def main_work():
                 hours_overtime = st.text_input("**Hours Overtime:**", value=st.session_state["latest_hours_overtime_left"])
                 hours_overtime_str = hours_overtime
                 hours_overtime = int(hhmm_to_decimal(hours_overtime))
-            with col3:
-                if "Hours Holiday" in st.session_state["edited_work_history_data"]:
-                    first_row_holiday = st.session_state["edited_work_history_data"]["Holiday"][0] if "Holiday" in st.session_state["edited_work_history_data"] and st.session_state["edited_work_history_data"]["Holiday"][0] else ""
-                    if first_row_holiday == "" or not first_row_holiday or pd.isna(first_row_holiday):  # Check if "Holiday" column is empty
-                        first_row_work_time = st.session_state["edited_work_history_data"]["Work Time"][0] if "Work Time" in st.session_state["edited_work_history_data"] and not pd.isna(st.session_state["edited_work_history_data"]["Work Time"][0]) else "00:00"
-                        first_row_standard_time = st.session_state["edited_work_history_data"]["Standard Time"][0] if "Standard Time" in st.session_state["edited_work_history_data"] else "00:00"
-                        
-                        work_time_decimal = hhmm_to_decimal(first_row_work_time)
-                        standard_time_decimal = hhmm_to_decimal(first_row_standard_time)
-                        if work_time_decimal < standard_time_decimal:
-                            # Calculate the difference and add it to "Holiday Hours"
-                            diff = standard_time_decimal - work_time_decimal
-                            holiday_hours_value = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
-                            holiday_hours_decimal = hhmm_to_decimal(holiday_hours_value)
-
-                            holiday_hours_value = holiday_hours_decimal + diff
-                            holiday_hours = decimal_hours_to_hhmmss(holiday_hours_value)
-                        # elif work_time_decimal < standard_time_decimal and st.session_state.get("prev_holiday_hour") is None:
-                        #     diff = standard_time_decimal
-                        #     holiday_hours_value = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
-                        #     holiday_hours_decimal = hhmm_to_decimal(holiday_hours_value)
-                        #     holiday_hours_value = holiday_hours_decimal + diff
-                        #     holiday_hours = f"{int(holiday_hours_value)}:{int((holiday_hours_value - int(holiday_hours_value)) * 60):02d}"
-                        else:
-                            holiday_hours = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
-                    else:
-                        holiday_hours = st.session_state["edited_work_history_data"]["Hours Holiday"][0] if "Hours Holiday" in st.session_state["edited_work_history_data"] else "00:00"
-                else:
-                    holiday_hours = work_history["Hours Holiday"][0] if "Hours Holiday" in work_history else "00:00"
-                # Holiday Hours: initial total holiday entitlement for the year.
-                holiday_hours = st.text_input("**Holiday Hours**", value=holiday_hours)
-                holiday_hours_str = holiday_hours
-                holiday_hours = hhmm_to_decimal(holiday_hours)
+                       
             with col4:
-                standard_work_hours = st.text_input("**Standard Work Hours**", value="04:00")
+                standard_work_hours = st.text_input("**Standard Work Hours**", value="08:00")
                 standard_work_hours_str = standard_work_hours
                 standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
             with col5:
@@ -131,7 +98,6 @@ def main_work():
                     "Holiday",
                     "Holiday Days",
                     "Hours Overtime Left",
-                    "Hours Holiday",
                     "employee_id",
                     "_id"
                 ],
@@ -189,7 +155,7 @@ def main_work():
                     )
                     
                     # Compute running holiday hours using the extracted holiday dates.
-                    df = compute_running_holiday_hours(df, holiday_hours, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
+                    df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
                     
                     st.session_state["edited_work_history_data"] = df
                     st.success("Holiday hours calculated and updated!")
@@ -204,7 +170,7 @@ def main_work():
                     if work_history_created["success"] == True:
                         st.success("Successfully Saved Data!")
                         
-                        st.session_state["edited_work_history_data"], prev_holiday_hour, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
+                        st.session_state["edited_work_history_data"], previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
                         st.rerun()
                     else:
                         st.error(f"Couldn't save work history: {work_history_created}")
@@ -290,15 +256,6 @@ def main_work():
                     # Only if the employee worked less than standard time, add the deficit
                     if worked_time < standard_time:
                         consumed_deficit += (standard_time - worked_time)
-
-            # Consumed holiday hours (in decimal) are simply the sum of deficits on non-holiday days.
-            holiday_consumed = decimal_hours_to_hhmmss(consumed_deficit)
-
-            # The last row's "Hours Holiday" column already gives you the holiday balance on the holiday day.
-            if not df_to_download.empty and not df_to_download["Hours Holiday"].empty:
-                holiday_hours_left_str = str(df_to_download["Hours Holiday"].iloc[-1]).strip()
-            else:
-                holiday_hours_left_str = "00:00"
             # Number of breaks: count of rows where "Break" is not empty and not "00:00"
             breaks_count = df_to_download["Break"].apply(
                 lambda x: bool(x and x.strip() != "" and x != "00:00")
@@ -376,8 +333,8 @@ def main_work():
                 ["Hours expected to work", hours_expected],
                 ["Hours Overtime", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
                 ["Holiday Days Left", updated_df_pdf["Holiday Days"].iloc[-1]],
-                ["Holiday hours consumed", f"{holiday_consumed} / {holiday_hours_str}"],
-                ["Holiday hours left", holiday_hours_left_str],
+                # ["Holiday hours consumed", f"{holiday_consumed} / {holiday_hours_str}"],
+                # ["Holiday hours left", holiday_hours_left_str],
                 ["Number of breaks", str(breaks_count)],
                 ["Duration of breaks", breaks_duration],
                 ["Total hours availability", total_hours_availability]
