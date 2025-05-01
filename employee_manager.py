@@ -12,6 +12,7 @@ load_dotenv()
 client = MongoClient(os.getenv("MONGODB_CLIENT"))  # Change if using a cloud DB
 db = client["bulldog_office"]  # Replace with actual database name
 work_history_collection = db["work_history"]  # Collection name
+temp_work_history_collection = db["temp_work_history"]  # Collection name
 users_collection = db["users"]
 
 def get_users(full_name=None):
@@ -41,6 +42,9 @@ def get_user_id(username):
     if user:
         return str(user["_id"]), user["full_name"]
     else:
+        user = users_collection.find_one({"full_name": username}, {"_id": 1, "username": 1})
+        if user:
+            return str(user["_id"]), user["username"]
         return None, None
 
 def delete_user_account(user_id):
@@ -87,52 +91,6 @@ def upsert_employee_work_history(df: pd.DataFrame, employee_id=None):
     except Exception as e:
         return {"success": False, "message": f"Bad request when upserting work history: {str(e)}"}
 
-def update_employee_work_history(df: pd.DataFrame):
-    try:
-        df["Date"] = pd.to_datetime(df["Date"])  # Ensures "Date" is a datetime object
-        records = df.to_dict(orient="records")
-
-        bulk_updates = []
-        for record in records:
-            record_id = record.pop("_id", None)  # Extract _id from the record
-            
-            if record_id:  # Only update if _id exists
-                bulk_updates.append(
-                    UpdateOne({"_id": ObjectId(record_id)}, {"$set": record}, upsert=True)
-                )
-
-        if bulk_updates:
-            work_history_collection.bulk_write(bulk_updates)  # Perform bulk update
-        
-        return {"success": True, "message": "Work History updated successfully"}    
-    except Exception as e:
-        return {"success": False, "message": f"Bad request when updating work history: {str(e)}"}
-
-def create_employee_work_history(employee_id, df: pd.DataFrame):
-    try:
-        df["Date"] = pd.to_datetime(df["Date"])  # Ensures "Date" is a datetime object
-        records = df.to_dict(orient="records")
-
-        bulk_updates = []
-        for record in records:
-            record["employee_id"] = str(employee_id)  # Convert employee_id to string
-            
-            # Create a unique filter using "Date" and "employee_id"
-            filter_query = {"employee_id": record["employee_id"], "Date": record["Date"]}
-
-            # Use $set to update or insert the record
-            bulk_updates.append(
-                UpdateOne(filter_query, {"$set": record}, upsert=True)
-            )
-
-        if bulk_updates:
-            work_history_collection.bulk_write(bulk_updates)  # Perform bulk operation
-
-        return {"success": True, "message": "Work History created/updated successfully"}
-
-    except Exception as e:
-        return {"success": False, "message": f"Bad request when creating work history: {str(e)}"}
-
 def create_user_account(**kwargs):
     try:
         timestamp = str(datetime.now().isoformat(sep=" ")).split(".")[0]
@@ -145,3 +103,36 @@ def create_user_account(**kwargs):
         return {"success": True, "message": "User created successfully"}
     except Exception as e:
         return {"success": False, "message": f"Bad request: {str(e)}"}
+
+
+def upsert_employee_temp_work_history(source_record, employee_id=None, employee_username=None):
+    try:
+        source_record["Date"] = pd.to_datetime(source_record["Date"])  # Ensure "Date" is a datetime object
+
+        bulk_updates = []
+        if employee_id:
+            source_record["employee_username"] = str(employee_username)
+            source_record["employee_id"] = str(employee_id)  # Ensure employee_id is a string
+            
+
+        record_id = source_record.pop("_id", None)  # Extract _id from the record
+
+        if record_id:  
+            # Update existing record using _id
+            bulk_updates.append(
+                UpdateOne({"_id": ObjectId(record_id)}, {"$set": source_record}, upsert=True)
+            )
+        else:
+            # Create or update based on "Date" and "employee_id"
+            filter_query = {"employee_id": source_record["employee_id"], "Date": source_record["Date"]}
+            bulk_updates.append(
+                UpdateOne(filter_query, {"$set": source_record}, upsert=True)
+            )
+
+        if bulk_updates:
+            temp_work_history_collection.bulk_write(bulk_updates)  # Perform bulk update
+
+        return {"success": True, "message": "Temp Work History upserted successfully"}
+
+    except Exception as e:
+        return {"success": False, "message": f"Bad request when upserting temp work history: {str(e)}"}
