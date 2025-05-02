@@ -19,9 +19,46 @@ def main():
             st.session_state.pop("pay_period_from")
             st.session_state.pop("pay_period_to")
             st.session_state.pop("employee_name")
+            if "selected_user" in st.session_state:
+                st.session_state.pop("selected_user")
 
+    file_type_choice = st.selectbox(
+        "Select the type of file you want to upload",
+        ("Select", "Single CSV Upload", "From Bulk Timecard")
+    )
+    if file_type_choice == "Single CSV Upload":
+        uploaded_file = st.file_uploader("Upload your timecard CSV", type=["csv"], on_change=reset_file)
+    elif file_type_choice == "From Bulk Timecard":
+        all_usernames = get_users()
+        selected_username = st.selectbox("Select Employee", all_usernames)
+        if "selected_user" in st.session_state and st.session_state["selected_user"] != selected_username:
+            user_id, full_name = get_user_id(selected_username)
+            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+            if work_history_asked.empty == False:
+                st.session_state["edited_data"] = work_history_asked
+                st.session_state["pay_period_from"] = first_date
+                st.session_state["pay_period_to"] = last_date
+            else:
+                reset_file()
+                st.warning("No temp work history found for the selected employee.")
+            st.session_state["employee_name"] = full_name
+            st.session_state["selected_user"] = selected_username
+        elif "selected_user" not in st.session_state:
+            user_id, full_name = get_user_id(selected_username)
+            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+            if work_history_asked.empty == False:
+                st.session_state["edited_data"] = work_history_asked
+                st.session_state["pay_period_from"] = first_date
+                st.session_state["pay_period_to"] = last_date
+            else:
+                reset_file()
+                st.warning("No temp work history found for the selected employee.")
+            st.session_state["employee_name"] = full_name
+            st.session_state["selected_user"] = selected_username
 
-    uploaded_file = st.file_uploader("Upload your timecard CSV", type=["csv"], on_change=reset_file)
+        uploaded_file = None
+    else:
+        uploaded_file = None
     
     if uploaded_file or "edited_data" in st.session_state:
         if not uploaded_file:
@@ -192,6 +229,10 @@ def main():
                 work_history_created = upsert_employee_work_history(updated_df, user_id)
                 if work_history_created["success"] == True:
                     st.success("Successfully Saved Data!")
+                    if "selected_user" in st.session_state:
+                        delete_employee_temp_work_history(user_id)
+                    reset_file()
+
                 else:
                     st.error(f"Couldn't save work history: {work_history_created}")
 

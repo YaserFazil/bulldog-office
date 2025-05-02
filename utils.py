@@ -286,3 +286,58 @@ def fetch_employee_work_history(user_id, start_date=None, end_date=None):
     except Exception as e:
         st.error(f"Something went wrong while fetching work history: {e}")
         return None, None, None
+    
+def delete_employee_temp_work_history(user_id):
+    try:
+        """Delete temp work history for the selected user."""
+        query = {"employee_id": str(user_id)}
+        result = temp_work_history_collection.delete_many(query)
+        if result.deleted_count > 0:
+            st.success(f"Deleted {result.deleted_count} records from temp work history.")
+        else:
+            st.warning("No records found to delete in temp work history.")
+    except Exception as e:
+        st.error(f"Something went wrong while deleting temp work history: {e}")
+
+
+def fetch_employee_temp_work_history(user_id):
+    try:
+        """Fetch temp work history for the selected user, 
+        also retrieves 'Hours Holiday' from the record before start_date if available."""
+        query = {"employee_id": str(user_id)}
+        
+        first_date = None
+        last_date = None
+        
+        work_history = list(temp_work_history_collection.find(query).sort("Date", ASCENDING))
+        
+        if work_history:
+            df = pd.DataFrame(work_history)
+            df['Date'] = pd.to_datetime(df['Date']).dt.date
+            df["IN"] = df["IN"].replace({np.nan: None}).astype("object").values
+            df["OUT"] = df["OUT"].replace({np.nan: None}).astype("object").values
+
+            # --- REORDER COLUMNS ---
+            desired_order = ["Day", "Date", "IN", "OUT", " Note"]  # Existing columns
+            for col in desired_order:
+                if col == " Note":
+                    df[col] = df["Note"]
+                elif col not in df.columns:
+                    df[col] = None  # Fill in if missing from DB
+            
+            # --- ADD EXTRA EMPTY COLUMNS ---
+            additional_columns = ["Work Time", " Daily Total", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday", "Holiday Days"]
+            for col in additional_columns:
+                df[col] = None  # Add empty columns
+
+            # Final column order: existing desired + additional
+            final_columns = desired_order + additional_columns
+            df = df[final_columns]
+
+            return df, df['Date'].iloc[0], df['Date'].iloc[-1]
+
+        return pd.DataFrame(), first_date, last_date
+
+    except Exception as e:
+        st.error(f"Something went wrong while fetching temp work history: {e}")
+        return None, None, None
