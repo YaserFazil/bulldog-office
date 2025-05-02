@@ -335,93 +335,130 @@ def main():
                     pass
         total_hours_availability = decimal_hours_to_hhmmss(total_daily)
 
-        # --- Build the PDF File ---
+        # Update column selection and ordering
+        desired_columns = ["Date", " Daily Total", "Break", "Day", "Holiday", "Holiday Days", 
+                        "Hours Overtime Left", "IN", "OUT", "Standard Time", "Multiplication", "Work Time"]
+        df_to_download = df_to_download[desired_columns]
 
+        # --- Build the PDF File with Enhanced Styling ---
         pdf_buffer = BytesIO()
         doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4),
-                                leftMargin=30, rightMargin=30, topMargin=30, bottomMargin=30)
+                                leftMargin=30, rightMargin=30, 
+                                topMargin=60, bottomMargin=40)  # Increased top margin for header
+
         styles = getSampleStyleSheet()
 
-        # Create custom styles for the summary page.
-        summary_title_style = ParagraphStyle(
-            'SummaryTitle',
+        # Custom Styles
+        header_style = ParagraphStyle(
+            'Header',
             parent=styles['Heading1'],
             fontName='Helvetica-Bold',
-            fontSize=30,
-            textColor=colors.darkblue,
-            alignment=1,  # center alignment
+            fontSize=24,
+            textColor=colors.HexColor("#2c3e50"),
+            alignment=1,
             spaceAfter=20
         )
 
-        summary_text_style = ParagraphStyle(
-            'SummaryText',
+        footer_style = ParagraphStyle(
+            'Footer',
             parent=styles['Normal'],
-            fontName='Helvetica',
-            fontSize=14,
-            textColor=colors.black,
-            leading=18,
-            spaceAfter=12
+            fontName='Helvetica-Oblique',
+            fontSize=10,
+            textColor=colors.HexColor("#7f8c8d"),
+            alignment=2
         )
+
+        # Create header and footer templates
+        def add_header_footer(canvas, doc):
+            # Header
+            canvas.saveState()
+            canvas.setFont('Helvetica-Bold', 16)
+            canvas.setFillColor(colors.HexColor("#2c3e50"))
+            canvas.drawString(40, doc.pagesize[1] - 40, "Bulldog Office - Work Hours Report")
+            
+            # Footer
+            canvas.setFont('Helvetica', 10)
+            canvas.setFillColor(colors.HexColor("#7f8c8d"))
+            canvas.drawRightString(doc.pagesize[0] - 40, 30, f"Page {doc.page}")
+            canvas.restoreState()
+
         elements = []
 
-        # -- First Page: Summary --
+        # -- First Page: Enhanced Summary --
+        # Resize logo
+        logo = Image("https://bulldogsliving.com/img/brand_logo/logo.png", width=200, height=60)
+        elements.append(logo)
+        elements.append(Spacer(1, 30))
 
-        # -- First Page: Customized Summary --
-
-        # Add a logo
-        elements.append(Image("https://bulldogsliving.com/img/brand_logo/logo.png"))
-        elements.append(Spacer(1, 20))
-
-
-        # Add a title with the custom style.
-        elements.append(Paragraph("Work Hours Summary", summary_title_style))
-        elements.append(Spacer(1, 20))
+        # Summary Title
+        elements.append(Paragraph("WORK HOURS SUMMARY", header_style))
+        elements.append(Spacer(1, 30))
         updated_df_pdf = safe_convert_to_df(edited_data).copy()
-        
-        # Build a summary table with two columns: Metric and Value.
+        # Summary Table with modern styling
         summary_data = [
             ["Metric", "Value"],
             ["Employee", employee_name],
             ["Pay Period", pay_period],
             ["Hours worked", hours_worked],
-            ["Hours expected to work", hours_expected],
-            ["Hours Overtime", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
-            ["Holiday Days Left", updated_df_pdf["Holiday Days"].iloc[-1]],
-            ["Number of breaks", str(breaks_count)],
-            ["Duration of breaks", breaks_duration],
-            ["Total hours availability", total_hours_availability]
+            ["Hours expected", hours_expected],
+            ["Overtime Balance", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
+            ["Remaining Holidays", updated_df_pdf["Holiday Days"].iloc[-1]],
+            ["Breaks Taken", f"{breaks_count} (Total: {breaks_duration})"],
+            ["Availability", total_hours_availability]
         ]
 
-        summary_table = Table(summary_data, colWidths=[220, 150])
+        summary_table = Table(summary_data, colWidths=[180, 180])
         summary_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 16),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-            ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#3498db")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,0), 14),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('BOTTOMPADDING', (0,0), (-1,0), 15),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#ecf0f1")),
+            ('GRID', (0,0), (-1,-1), 1, colors.HexColor("#bdc3c7")),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#f5f6fa")])
         ]))
         elements.append(summary_table)
         elements.append(PageBreak())
 
-        # -- Next Pages: Full Data Table --
+        # -- Data Table Page --
+        # Header for data table
+        elements.append(Paragraph("DETAILED WORK LOG", header_style))
+        elements.append(Spacer(1, 20))
 
-        # Convert DataFrame to a list-of-lists.
-        # (Converting all values to string for display purposes.)
+        # Create styled data table
         table_data = [df_to_download.columns.tolist()] + df_to_download.astype(str).values.tolist()
+        # Adjust the column widths based on the longest value between the column name and its data
+        max_column_widths = [
+            max(
+                len(str(col)),  # Length of the column header
+                max(len(str(item)) for item in df_to_download[col].astype(str).values)  # Length of longest value
+            ) * 5.3  # Width multiplier (adjust as needed for your font)
+            for col in df_to_download.columns
+        ]
 
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('GRID', (0, 0), (-1, -1), 0.50, colors.black),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        # Ensure a minimum width of 40
+        max_column_widths = [max(40, width) for width in max_column_widths]
+
+        # Create the table with calculated column widths
+        data_table = Table(table_data, repeatRows=1, colWidths=max_column_widths)
+
+        data_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2ecc71")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#bdc3c7")),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#f5f6fa")]),
+            ('LEFTPADDING', (0,0), (-1,-1), 5),
+            ('RIGHTPADDING', (0,0), (-1,-1), 5),
         ]))
-        elements.append(table)
+        elements.append(data_table)
 
-        doc.build(elements)
+        # Build document with header/footer
+        doc.build(elements, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
         pdf_data = pdf_buffer.getvalue()
         with col9:
             st.download_button(
