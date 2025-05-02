@@ -329,6 +329,8 @@ def fetch_employee_temp_work_history(user_id):
             additional_columns = ["Work Time", " Daily Total", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday", "Holiday Days"]
             for col in additional_columns:
                 df[col] = None  # Add empty columns
+                if col == "Multiplication":
+                    df[col] = 1.0
 
             # Final column order: existing desired + additional
             final_columns = desired_order + additional_columns
