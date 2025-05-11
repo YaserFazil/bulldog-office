@@ -38,6 +38,9 @@ def emp_manage_main():
         "date_joined": st.column_config.DateColumn("Date Joined", help="User Join Date"),
         "_id": st.column_config.TextColumn("User ID", disabled=True),
         "email": st.column_config.TextColumn("Email", help="The user's email address", required=True),
+        "hours_overtime": st.column_config.TextColumn(
+            "Hours Overtime", help="The user's overtime hours", max_chars=100, required=False, default="00:00"
+        ),
     }
     
     all_data = get_profile_dataset()
@@ -45,7 +48,7 @@ def emp_manage_main():
         st.data_editor(
             all_data,
             key="users_manager",
-            column_order=("full_name", "username", "email", "date_joined", "_id"),
+            column_order=("full_name", "username", "email", "hours_overtime", "date_joined", "_id"),
             disabled=("_id",),
             column_config=column_configuration,
             use_container_width=True,
