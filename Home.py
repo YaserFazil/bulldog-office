@@ -35,6 +35,17 @@ def main():
             user_id, full_name = get_user_id(selected_username)
             work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
             if work_history_asked.empty == False:
+                # Load holiday events from the JSON file.
+                calendar_events_for_bulk = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
+
+                # Convert the keys from string to date objects.
+                calendar_events_date_for_bulk = {
+                    pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                    for date_str, event in calendar_events_for_bulk.items()
+                }
+
+                # Map the holiday events onto the DataFrame using the converted keys.
+                work_history_asked['Holiday'] = work_history_asked['Date'].map(calendar_events_date_for_bulk)
                 st.session_state["edited_data"] = work_history_asked
                 st.session_state["pay_period_from"] = first_date
                 st.session_state["pay_period_to"] = last_date
