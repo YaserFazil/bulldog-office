@@ -35,7 +35,14 @@ def main_work():
             # # Fetch filtered data based on user selection
             work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
             latest_holiday_day = previous_holiday_days if previous_holiday_days else int(work_history["Holiday Days"].iloc[0]) if "Holiday Days" in work_history and work_history["Holiday Days"].iloc[0] else int(0)
-            latest_hours_overtime_left = previous_hours_overtime if previous_hours_overtime else work_history["Hours Overtime Left"].iloc[0] if "Hours Overtime Left" in work_history and work_history["Hours Overtime Left"].iloc[0] else "00:00"
+            latest_hours_overtime_left = (
+                previous_hours_overtime
+                if previous_hours_overtime is not None
+                else work_history["Hours Overtime Left"].iloc[0]
+                if "Hours Overtime Left" in work_history and work_history["Hours Overtime Left"].iloc[0] is not None
+                else "00:00"
+            )
+
             st.session_state["latest_holiday_days_left"] = latest_holiday_day
             st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
             st.session_state["edited_work_history_data"] = work_history
@@ -182,13 +189,6 @@ def main_work():
             pay_period = f"{pay_period_from_selected} - {pay_period_to_selected}"
 
             col8, col9 = st.columns(2, vertical_alignment="bottom", gap="small")
-            # with col7:
-            #     # Create date inputs for the user to select a date range.
-            #     # Default values are set to the minimum and maximum dates in the DataFrame.
-            #     start_date, end_date = st.date_input(
-            #         "Select date range:",
-            #         value=[edited_work_history_data["Date"].min(), edited_work_history_data["Date"].max()]
-            #     )
             start_date = edited_work_history_data["Date"].min()
             end_date = edited_work_history_data["Date"].max()
             # Filter the DataFrame based on the selected date range

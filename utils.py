@@ -265,6 +265,8 @@ def fetch_employee_work_history(user_id, start_date=None, end_date=None):
             prev_record = list(prev_record)
             if prev_record and "Hours Overtime Left" in prev_record[0] and prev_record[0]["Hours Overtime Left"]:
                 previous_hours_overtime = prev_record[0]["Hours Overtime Left"]
+            elif not prev_record:
+                previous_hours_overtime = "00:00"
                 
             if prev_record and "Holiday Days" in prev_record[0] and prev_record[0]["Holiday Days"]:
                 previous_holiday_days = prev_record[0]["Holiday Days"]
