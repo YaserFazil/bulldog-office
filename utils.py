@@ -5,7 +5,11 @@ import os
 import numpy as np
 from pymongo import ASCENDING, DESCENDING
 from employee_manager import *
-
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 # ----------------------
 # 1. Helper: decimal hours to HH:MM:SS
@@ -345,3 +349,50 @@ def fetch_employee_temp_work_history(user_id):
     except Exception as e:
         st.error(f"Something went wrong while fetching temp work history: {e}")
         return None, None, None
+
+
+def send_email_with_attachment(email, pdf_buffer, file_name, mime_type):
+    """Send an email with the PDF attachment."""
+    try:
+        # Create a multipart email message
+        msg = MIMEMultipart()
+        msg['From'] = "frfvipbl@gmail.com"
+        msg['To'] = email
+        msg['Subject'] = "Your Work History PDF"
+        msg.attach(MIMEText("Please find attached your work history PDF.", 'plain'))
+        # Attach the PDF file
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(pdf_buffer.getvalue())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename={file_name}')
+        msg.attach(part)
+        # Send the email
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            # server.starttls()
+            server.login("frfvipbl@gmail.com", "vwks blct zpbr qqbm")
+            server.sendmail("frfvipbl@gmail.com", email, msg.as_string())
+        st.success("Email sent successfully.")
+    except Exception as e:
+        st.error(f"Failed to send email: {e}")
+        raise e
+
+
+def send_the_pdf_created_in_history_page_to_email(user_id, pdf_buffer, file_name, mime_type):
+    try:
+        """Send the PDF created in the history page to the user's email."""
+        # Fetch user email from the database
+        query = {"_id": ObjectId(user_id)}
+        user = users_collection.find_one(query)
+        
+        if user and "email" in user:
+            email = user["email"]
+            if email:
+                # Send the email with the PDF attachment
+                send_email_with_attachment(email, pdf_buffer, file_name, mime_type)
+            else:
+                st.warning("User email not found.")
+        else:
+            st.warning("User not found.")
+    except Exception as e:
+        st.error(f"Something went wrong while sending the PDF: {e}")
+

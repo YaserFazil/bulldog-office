@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import get_users, get_user_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events
+from utils import get_users, get_user_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events, send_the_pdf_created_in_history_page_to_email
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -188,7 +188,7 @@ def main_work():
             st.subheader("Export Records")
             pay_period = f"{pay_period_from_selected} - {pay_period_to_selected}"
 
-            col8, col9 = st.columns(2, vertical_alignment="bottom", gap="small")
+            col8, col9, col_send_email_btn = st.columns(3, vertical_alignment="bottom", gap="small")
             start_date = edited_work_history_data["Date"].min()
             end_date = edited_work_history_data["Date"].max()
             # Filter the DataFrame based on the selected date range
@@ -414,6 +414,11 @@ def main_work():
                     use_container_width=True
                 )
     
-    
+            with col_send_email_btn:
+                # Email sending logic
+                if st.button("Send Email", use_container_width=True):
+                    st.write("Email functionality is not implemented yet.")
+                    send_the_pdf_created_in_history_page_to_email(user_id, pdf_buffer, f"{employee_name}_pay_period_{pay_period}_bulldog_office.pdf", "application/pdf")
+                    st.write(user_id)
 if __name__ == "__main__":
     main_work()
