@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import get_users, get_user_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events, send_the_pdf_created_in_history_page_to_email
+from utils import get_employees, get_employee_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events, send_the_pdf_created_in_history_page_to_email
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -9,12 +9,12 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 def main_work():
     st.title("Work History Records")
     
-    all_usernames = get_users()
+    all_usernames = get_employees()
     selected_username = st.selectbox("Select Employee", all_usernames)
     
     if selected_username:
-        user_id, full_name = get_user_id(selected_username)
-        work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
+        employee_id, full_name = get_employee_id(selected_username)
+        work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
         if work_history.empty:
             st.warning("No work history found for this employee.")
             return
@@ -32,8 +32,8 @@ def main_work():
         with col13:
             period_loaded = st.button("Load selected period")
         if period_loaded:
-            # # Fetch filtered data based on user selection
-            work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id, pay_period_from_selected, pay_period_to_selected)
+            # # Fetch filtered data based on employee selection
+            work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id, pay_period_from_selected, pay_period_to_selected)
             latest_holiday_day = previous_holiday_days if previous_holiday_days else int(work_history["Holiday Days"].iloc[0]) if "Holiday Days" in work_history and work_history["Holiday Days"].iloc[0] else int(0)
             latest_hours_overtime_left = (
                 previous_hours_overtime
@@ -171,13 +171,13 @@ def main_work():
             with col3:
                 # Implement actual save logic here
                 if st.button("Save Changes", use_container_width=True):
-                    # user_id, full_name = get_user_id(selected_username)
+                    # employee_id, full_name = get_employee_id(selected_username)
                     updated_df = safe_convert_to_df(edited_work_history_data).copy()
-                    work_history_created = upsert_employee_work_history(updated_df, user_id)
+                    work_history_created = upsert_employee_work_history(updated_df, employee_id)
                     if work_history_created["success"] == True:
                         st.success("Successfully Saved Data!")
                         
-                        st.session_state["edited_work_history_data"], previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
+                        st.session_state["edited_work_history_data"], previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
                         st.rerun()
                     else:
                         st.error(f"Couldn't save work history: {work_history_created}")
@@ -418,7 +418,7 @@ def main_work():
                 # Email sending logic
                 if st.button("Send Email", use_container_width=True):
                     st.write("Email functionality is not implemented yet.")
-                    send_the_pdf_created_in_history_page_to_email(user_id, pdf_buffer, f"{employee_name}_pay_period_{pay_period}_bulldog_office.pdf", "application/pdf")
-                    st.write(user_id)
+                    send_the_pdf_created_in_history_page_to_email(employee_id, pdf_buffer, f"{employee_name}_pay_period_{pay_period}_bulldog_office.pdf", "application/pdf")
+                    st.write(employee_id)
 if __name__ == "__main__":
     main_work()

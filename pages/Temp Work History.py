@@ -8,32 +8,32 @@ def reset_file():
     if "temp_work_data" in st.session_state:
         st.session_state.pop("temp_work_data")
         st.session_state.pop("temp_employee_name")
-        if "selected_temp_user" in st.session_state:
-            st.session_state.pop("selected_temp_user")
-all_usernames = get_users()
+        if "selected_temp_employee" in st.session_state:
+            st.session_state.pop("selected_temp_employee")
+all_usernames = get_employees()
 selected_username = st.selectbox("Select Employee", all_usernames)
-if "selected_temp_user" in st.session_state and st.session_state["selected_temp_user"] != selected_username:
-    user_id, full_name = get_user_id(selected_username)
-    work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+if "selected_temp_employee" in st.session_state and st.session_state["selected_temp_employee"] != selected_username:
+    employee_id, full_name = get_employee_id(selected_username)
+    work_history_asked, first_date, last_date = fetch_employee_temp_work_history(employee_id)
     if work_history_asked.empty == False:
         st.session_state["temp_work_data"] = work_history_asked
     else:
         reset_file()
         st.warning("No temp work history found for the selected employee.")
     st.session_state["temp_employee_name"] = full_name
-    st.session_state["temp_user_id"] = user_id
-    st.session_state["selected_temp_user"] = selected_username
-elif "selected_temp_user" not in st.session_state:
-    user_id, full_name = get_user_id(selected_username)
-    work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+    st.session_state["temp_employee_id"] = employee_id
+    st.session_state["selected_temp_employee"] = selected_username
+elif "selected_temp_employee" not in st.session_state:
+    employee_id, full_name = get_employee_id(selected_username)
+    work_history_asked, first_date, last_date = fetch_employee_temp_work_history(employee_id)
     if work_history_asked.empty == False:
         st.session_state["temp_work_data"] = work_history_asked
     else:
         reset_file()
         st.warning("No temp work history found for the selected employee.")
     st.session_state["temp_employee_name"] = full_name
-    st.session_state["temp_user_id"] = user_id
-    st.session_state["selected_temp_user"] = selected_username
+    st.session_state["temp_employee_id"] = employee_id
+    st.session_state["selected_temp_employee"] = selected_username
 
 
 if "temp_work_data" in st.session_state:
@@ -46,6 +46,6 @@ if "temp_work_data" in st.session_state:
     st.write("Click the button below to reset the temp work history.")
     if st.button(f"Reset Temp Work History for {st.session_state['temp_employee_name']}"):
         reset_file()
-        delete_employee_temp_work_history(st.session_state["temp_user_id"])
+        delete_employee_temp_work_history(st.session_state["temp_employee_id"])
         st.success("Temp work history reset successfully.")
         st.rerun()

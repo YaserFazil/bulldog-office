@@ -15,49 +15,49 @@ work_history_collection = db["work_history"]  # Collection name
 temp_work_history_collection = db["temp_work_history"]  # Collection name
 employees_collection = db["employees"]
 
-def get_users(full_name=None):
-    users = list(employees_collection.find({}, {"username": 1, "full_name": 1}))
+def get_employees(full_name=None):
+    employees = list(employees_collection.find({}, {"username": 1, "full_name": 1}))
     usernames = []
     if full_name:
-        selected_user = next((user for user in users if user["full_name"] == full_name), None)
-        if selected_user:
-            usernames.append(selected_user["username"])
-        usernames.extend(user["username"] for user in users if not selected_user or user["username"] != selected_user.get("username"))
+        selected_employee = next((employee for employee in employees if employee["full_name"] == full_name), None)
+        if selected_employee:
+            usernames.append(selected_employee["username"])
+        usernames.extend(employee["username"] for employee in employees if not selected_employee or employee["username"] != selected_employee.get("username"))
     else:
-        usernames = [user["username"] for user in users]
+        usernames = [employee["username"] for employee in employees]
     return usernames
 
-def check_user(email):
+def check_employee(email):
     return employees_collection.find_one({"email": email}) is not None
 
-def validate_user(username):
+def validate_employee(username):
     return employees_collection.find_one({"username": username}) is not None
 
-def validate_user_full_name(full_name):
-    user = employees_collection.find_one({"full_name": full_name}, {"username": 1})
-    return user["username"] if user else None
+def validate_employee_full_name(full_name):
+    employee = employees_collection.find_one({"full_name": full_name}, {"username": 1})
+    return employee["username"] if employee else None
 
-def get_user_id(username):
-    user = employees_collection.find_one({"username": username}, {"_id": 1, "full_name": 1})
-    if user:
-        return str(user["_id"]), user["full_name"]
+def get_employee_id(username):
+    employee = employees_collection.find_one({"username": username}, {"_id": 1, "full_name": 1})
+    if employee:
+        return str(employee["_id"]), employee["full_name"]
     else:
-        user = employees_collection.find_one({"full_name": username}, {"_id": 1, "username": 1})
-        if user:
-            return str(user["_id"]), user["username"]
+        employee = employees_collection.find_one({"full_name": username}, {"_id": 1, "username": 1})
+        if employee:
+            return str(employee["_id"]), employee["username"]
         return None, None
 
-def delete_user_account(user_id):
-    result = employees_collection.delete_one({"_id": user_id})
+def delete_employee_account(employee_id):
+    result = employees_collection.delete_one({"_id": employee_id})
     if result.deleted_count:
-        return {"success": True, "message": "User Account Deleted!"}
-    return {"success": False, "message": "User not found!"}
+        return {"success": True, "message": "employee Account Deleted!"}
+    return {"success": False, "message": "employee not found!"}
 
-def update_user_account(user_id, **kwargs):
-    result = employees_collection.update_one({"_id": user_id}, {"$set": kwargs})
+def update_employee_account(employee_id, **kwargs):
+    result = employees_collection.update_one({"_id": employee_id}, {"$set": kwargs})
     if result.modified_count:
-        return {"success": True, "message": "User Updated!"}
-    return {"success": False, "message": "No changes made or user not found!"}
+        return {"success": True, "message": "employee Updated!"}
+    return {"success": False, "message": "No changes made or employee not found!"}
 
 def upsert_employee_work_history(df: pd.DataFrame, employee_id=None):
     try:
@@ -91,16 +91,16 @@ def upsert_employee_work_history(df: pd.DataFrame, employee_id=None):
     except Exception as e:
         return {"success": False, "message": f"Bad request when upserting work history: {str(e)}"}
 
-def create_user_account(**kwargs):
+def create_employee_account(**kwargs):
     try:
         timestamp = str(datetime.now().isoformat(sep=" ")).split(".")[0]
-        if check_user(kwargs["email"]):
-            return {"success": False, "message": f"User with the {kwargs['email']} email already exists!"}
-        if validate_user(kwargs["username"]):
-            return {"success": False, "message": f"User with the {kwargs['username']} username already exists!"}
-        user_data = {"date_joined": timestamp, **kwargs}
-        employees_collection.insert_one(user_data)
-        return {"success": True, "message": "User created successfully"}
+        if check_employee(kwargs["email"]):
+            return {"success": False, "message": f"employee with the {kwargs['email']} email already exists!"}
+        if validate_employee(kwargs["username"]):
+            return {"success": False, "message": f"employee with the {kwargs['username']} username already exists!"}
+        employee_data = {"date_joined": timestamp, **kwargs}
+        employees_collection.insert_one(employee_data)
+        return {"success": True, "message": "employee created successfully"}
     except Exception as e:
         return {"success": False, "message": f"Bad request: {str(e)}"}
 

@@ -73,7 +73,7 @@ if uploaded_filee is not None:
     if st.button("💾 Save Changes to Database"):
         with st.spinner("Saving..."):
             for _, row in edited_df.iterrows():
-                user_id, username = get_user_id(row['Employee'])
+                employee_id, username = get_employee_id(row['Employee'])
                 data = {
                     'Day': row['Day'],
                     'Date': row['Date'],
@@ -81,5 +81,5 @@ if uploaded_filee is not None:
                     'OUT': row['OUT'],
                     'Note': row['Note']
                 }
-                upsert_employee_temp_work_history(data, user_id, username)
+                upsert_employee_temp_work_history(data, employee_id, username)
         st.success("Changes saved to database successfully.")

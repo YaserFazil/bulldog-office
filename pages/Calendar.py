@@ -185,7 +185,7 @@ def main():
                     save_events(events)
                     st.success("Event deleted!")
                     # st.rerun()
-    # If the user clicks on a date (dateClick callback)...
+    # If the employee clicks on a date (dateClick callback)...
     if returned_state.get("dateClick"):
         clicked_date = returned_state["dateClick"]["date"]
         date_str = pd.to_datetime(clicked_date).strftime("%Y-%m-%d")

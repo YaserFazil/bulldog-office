@@ -19,8 +19,8 @@ def main():
             st.session_state.pop("pay_period_from")
             st.session_state.pop("pay_period_to")
             st.session_state.pop("employee_name")
-            if "selected_user" in st.session_state:
-                st.session_state.pop("selected_user")
+            if "selected_employee" in st.session_state:
+                st.session_state.pop("selected_employee")
 
     file_type_choice = st.selectbox(
         "Select the type of file you want to upload",
@@ -29,11 +29,11 @@ def main():
     if file_type_choice == "Single CSV Upload":
         uploaded_file = st.file_uploader("Upload your timecard CSV", type=["csv"], on_change=reset_file)
     elif file_type_choice == "From Bulk Timecard":
-        all_usernames = get_users()
+        all_usernames = get_employees()
         selected_username = st.selectbox("Select Employee", all_usernames)
-        if "selected_user" in st.session_state and st.session_state["selected_user"] != selected_username:
-            user_id, full_name = get_user_id(selected_username)
-            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+        if "selected_employee" in st.session_state and st.session_state["selected_employee"] != selected_username:
+            employee_id, full_name = get_employee_id(selected_username)
+            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(employee_id)
             if work_history_asked.empty == False:
                 # Load holiday events from the JSON file.
                 calendar_events_for_bulk = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
@@ -53,10 +53,10 @@ def main():
                 reset_file()
                 st.warning("No temp work history found for the selected employee.")
             st.session_state["employee_name"] = full_name
-            st.session_state["selected_user"] = selected_username
-        elif "selected_user" not in st.session_state:
-            user_id, full_name = get_user_id(selected_username)
-            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(user_id)
+            st.session_state["selected_employee"] = selected_username
+        elif "selected_employee" not in st.session_state:
+            employee_id, full_name = get_employee_id(selected_username)
+            work_history_asked, first_date, last_date = fetch_employee_temp_work_history(employee_id)
             if work_history_asked.empty == False:
                 st.session_state["edited_data"] = work_history_asked
                 st.session_state["pay_period_from"] = first_date
@@ -65,7 +65,7 @@ def main():
                 reset_file()
                 st.warning("No temp work history found for the selected employee.")
             st.session_state["employee_name"] = full_name
-            st.session_state["selected_user"] = selected_username
+            st.session_state["selected_employee"] = selected_username
 
         uploaded_file = None
     else:
@@ -110,10 +110,10 @@ def main():
         with col13:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
         with col14:
-            all_usernames = get_users(employee_name)
+            all_usernames = get_employees(employee_name)
             selected_username = st.selectbox("Selected Employee", all_usernames)
-        user_id, full_name = get_user_id(selected_username)
-        old_work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(user_id)
+        employee_id, full_name = get_employee_id(selected_username)
+        old_work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
         latest_holiday_day = previous_holiday_days if previous_holiday_days else int(old_work_history["Holiday Days"].iloc[-1]) if "Holiday Days" in old_work_history and old_work_history["Holiday Days"].iloc[-1] else int(0)
         latest_hours_overtime = previous_hours_overtime if previous_hours_overtime else old_work_history["Hours Overtime Left"].iloc[-1] if "Hours Overtime Left" in old_work_history and old_work_history["Hours Overtime Left"].iloc[-1] else "00:00"
         col3, col4, colstnhr = st.columns(3)
@@ -237,11 +237,11 @@ def main():
         with col12:
             if st.button("Save Data to DB", use_container_width=True):
                 updated_df = safe_convert_to_df(edited_data).copy()
-                work_history_created = upsert_employee_work_history(updated_df, user_id)
+                work_history_created = upsert_employee_work_history(updated_df, employee_id)
                 if work_history_created["success"] == True:
                     st.success("Successfully Saved Data!")
-                    if "selected_user" in st.session_state:
-                        delete_employee_temp_work_history(user_id)
+                    if "selected_employee" in st.session_state:
+                        delete_employee_temp_work_history(employee_id)
                     reset_file()
 
                 else:
@@ -251,7 +251,7 @@ def main():
 
         col7, col8, col9 = st.columns(3, vertical_alignment="bottom", gap="small")
         with col7:
-            # Create date inputs for the user to select a date range.
+            # Create date inputs for the employee to select a date range.
             # Default values are set to the minimum and maximum dates in the DataFrame.
             start_date, end_date = st.date_input(
                 "Select date range:",

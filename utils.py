@@ -254,17 +254,17 @@ def compute_time_difference(work_time, standard_time, is_holiday=None, default=T
     else:
         return diff / 60 if not sign else -diff / 60
 
-def fetch_employee_work_history(user_id, start_date=None, end_date=None):
+def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
     try:
-        """Fetch work history for the selected user within a date range, 
+        """Fetch work history for the selected employee within a date range, 
         also retrieves 'Hours Holiday' from the record before start_date if available."""
-        query = {"employee_id": str(user_id)}
+        query = {"employee_id": str(employee_id)}
         
         # Fetch the record before the start_date
         previous_hours_overtime = None
         previous_holiday_days = None
         if start_date:
-            prev_query = {"employee_id": str(user_id), "Date": {"$lt": datetime.combine(start_date, datetime.min.time())}}
+            prev_query = {"employee_id": str(employee_id), "Date": {"$lt": datetime.combine(start_date, datetime.min.time())}}
             prev_record = work_history_collection.find(prev_query).sort("Date", DESCENDING).limit(1)
             prev_record = list(prev_record)
             if prev_record and "Hours Overtime Left" in prev_record[0] and prev_record[0]["Hours Overtime Left"]:
@@ -293,10 +293,10 @@ def fetch_employee_work_history(user_id, start_date=None, end_date=None):
         st.error(f"Something went wrong while fetching work history: {e}")
         return None, None, None
     
-def delete_employee_temp_work_history(user_id):
+def delete_employee_temp_work_history(employee_id):
     try:
-        """Delete temp work history for the selected user."""
-        query = {"employee_id": str(user_id)}
+        """Delete temp work history for the selected employee."""
+        query = {"employee_id": str(employee_id)}
         result = temp_work_history_collection.delete_many(query)
         if result.deleted_count > 0:
             st.success(f"Deleted {result.deleted_count} records from temp work history.")
@@ -306,11 +306,11 @@ def delete_employee_temp_work_history(user_id):
         st.error(f"Something went wrong while deleting temp work history: {e}")
 
 
-def fetch_employee_temp_work_history(user_id):
+def fetch_employee_temp_work_history(employee_id):
     try:
-        """Fetch temp work history for the selected user, 
+        """Fetch temp work history for the selected employee, 
         also retrieves 'Hours Holiday' from the record before start_date if available."""
-        query = {"employee_id": str(user_id)}
+        query = {"employee_id": str(employee_id)}
         
         first_date = None
         last_date = None
@@ -377,22 +377,22 @@ def send_email_with_attachment(email, pdf_buffer, file_name, mime_type):
         raise e
 
 
-def send_the_pdf_created_in_history_page_to_email(user_id, pdf_buffer, file_name, mime_type):
+def send_the_pdf_created_in_history_page_to_email(employee_id, pdf_buffer, file_name, mime_type):
     try:
-        """Send the PDF created in the history page to the user's email."""
-        # Fetch user email from the database
-        query = {"_id": ObjectId(user_id)}
-        user = employees_collection.find_one(query)
+        """Send the PDF created in the history page to the employee's email."""
+        # Fetch employee email from the database
+        query = {"_id": ObjectId(employee_id)}
+        employee = employees_collection.find_one(query)
         
-        if user and "email" in user:
-            email = user["email"]
+        if employee and "email" in employee:
+            email = employee["email"]
             if email:
                 # Send the email with the PDF attachment
                 send_email_with_attachment(email, pdf_buffer, file_name, mime_type)
             else:
-                st.warning("User email not found.")
+                st.warning("employee email not found.")
         else:
-            st.warning("User not found.")
+            st.warning("employee not found.")
     except Exception as e:
         st.error(f"Something went wrong while sending the PDF: {e}")
 
