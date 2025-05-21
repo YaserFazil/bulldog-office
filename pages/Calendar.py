@@ -5,7 +5,7 @@ from datetime import date, datetime
 import pandas as pd
 from streamlit_calendar import calendar
 import requests
-
+from streamlit_extras.switch_page_button import switch_page
 # --- File for storing events ---
 EVENTS_FILE = "calendar_events.json"
 
@@ -117,6 +117,12 @@ def events_list_to_dict(event_list):
     return events_dict
 
 def main():
+    if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
+        st.error("You need to log in first.")
+        st.session_state["logged_in"] = False
+        st.session_state["user_id"] = None
+        switch_page("Login")  # Name of your Home.py page (no .py)
+        return
     st.title("Interactive Calendar")
 
     # Load stored events from JSON.

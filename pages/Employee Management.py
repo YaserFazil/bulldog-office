@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from employee_manager import create_employee_account, update_employee_account, delete_employee_account
 from pymongo import MongoClient
 import time
-
+from streamlit_extras.switch_page_button import switch_page
 load_dotenv()
 
 # MongoDB Setup
@@ -25,6 +25,12 @@ def get_profile_dataset(pd_output=True):
         return df
 
 def emp_manage_main():
+    if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
+        st.error("You need to log in first.")
+        st.session_state["logged_in"] = False
+        st.session_state["user_id"] = None
+        switch_page("Login")  # Name of your Home.py page (no .py)
+        return
     st.title("Employee Management Panel")
     
     # Define column configurations

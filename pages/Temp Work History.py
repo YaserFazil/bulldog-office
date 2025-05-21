@@ -1,9 +1,14 @@
 from employee_manager import *
 from utils import *
 import streamlit as st
-
+from streamlit_extras.switch_page_button import switch_page
 
 st.title("Temp Work History")
+if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
+    st.error("You need to log in first.")
+    st.session_state["logged_in"] = False
+    st.session_state["user_id"] = None
+    switch_page("Login")  # Name of your Home.py page (no .py)
 def reset_file():
     if "temp_work_data" in st.session_state:
         st.session_state.pop("temp_work_data")

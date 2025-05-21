@@ -7,10 +7,18 @@ import streamlit as st
 import io
 from io import BytesIO
 from utils import *
+from streamlit_extras.switch_page_button import switch_page
+
 # ----------------------
 # 10. The main Streamlit app
 # ----------------------
 def main():
+    if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
+        st.error("You need to log in first.")
+        st.session_state["logged_in"] = False
+        st.session_state["user_id"] = None
+        switch_page("Login")  # Name of your Home.py page (no .py)
+        return
     st.title("Timecard Report Uploader")
     
     def reset_file():

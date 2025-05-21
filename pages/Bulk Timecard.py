@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 from employee_manager import *
+from streamlit_extras.switch_page_button import switch_page
 def parse_bulk_timecard(input_data):
     try:
         if isinstance(input_data, pd.DataFrame):
@@ -59,6 +60,12 @@ def parse_bulk_timecard(input_data):
         return pd.DataFrame(), []
 
 # Streamlit App
+if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
+    st.error("You need to log in first.")
+    st.session_state["logged_in"] = False
+    st.session_state["user_id"] = None
+    switch_page("Login")  # Name of your Home.py page (no .py)
+    
 st.title("🕒 Bulk Timecard CSV Parser")
 
 uploaded_filee = st.file_uploader("Upload CSV file", type=["csv"], key="file_uploaderh")

@@ -14,6 +14,7 @@ db = client["bulldog_office"]  # Replace with actual database name
 work_history_collection = db["work_history"]  # Collection name
 temp_work_history_collection = db["temp_work_history"]  # Collection name
 employees_collection = db["employees"]
+users_collection = db["users"]
 
 def get_employees(full_name=None):
     employees = list(employees_collection.find({}, {"username": 1, "full_name": 1}))
