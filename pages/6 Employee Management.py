@@ -86,7 +86,7 @@ def emp_manage_main():
                 if account_is_created["success"]:
                     del st.session_state["employees_manager"]
                     status.update(label="employee Account Creation Completed!", state="complete", expanded=True)
-                    st.switch_page("./pages/Employee Management.py")
+                    st.switch_page("./pages/6 Employee Management.py")
                 else:
                     st.error(account_is_created["message"])
                     status.update(label="employee Account Creation Failed!", state="error", expanded=True)
@@ -109,7 +109,7 @@ def emp_manage_main():
                 st.success("employee Updated!")
                 status.update(label="employee Account Update Completed!", state="complete", expanded=True)
                 time.sleep(3)
-                st.switch_page("./pages/Employee Management.py")
+                st.switch_page("./pages/6 Employee Management.py")
             else:
                 st.error(account_is_updated["message"])
                 status.update(label="employee Account Update Failed!", state="error", expanded=True)
