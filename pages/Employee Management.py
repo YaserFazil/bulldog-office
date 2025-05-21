@@ -12,10 +12,10 @@ load_dotenv()
 # MongoDB Setup
 client = MongoClient(os.getenv("MONGODB_CLIENT"))
 db = client["bulldog_office"]
-users_collection = db["users"]
+employees_collection = db["employees"]
 
 def get_profile_dataset(pd_output=True):
-    items = list(users_collection.find({}))  # Retrieve all users, excluding MongoDB ID field
+    items = list(employees_collection.find({}))  # Retrieve all users, excluding MongoDB ID field
     if not pd_output:
         return items
     else:

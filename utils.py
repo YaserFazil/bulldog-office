@@ -382,7 +382,7 @@ def send_the_pdf_created_in_history_page_to_email(user_id, pdf_buffer, file_name
         """Send the PDF created in the history page to the user's email."""
         # Fetch user email from the database
         query = {"_id": ObjectId(user_id)}
-        user = users_collection.find_one(query)
+        user = employees_collection.find_one(query)
         
         if user and "email" in user:
             email = user["email"]
