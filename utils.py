@@ -138,7 +138,15 @@ def is_valid_holiday(value):
 def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_days_count, initial_overtime="00:00"):
     # Ensure DataFrame is sorted by Date ascending.
     df_sorted = df.sort_values(by="Date").copy()
-    running_overtime = hhmm_to_decimal(initial_overtime) if initial_overtime != "00:00" else df_sorted["Difference (Decimal)"].iloc[0]
+    
+    # Initialize running_overtime based on initial_overtime
+    if initial_overtime != "00:00":
+        running_overtime = hhmm_to_decimal(initial_overtime)
+    else:
+        # For first row, use the Difference (Decimal) directly without additional processing
+        first_row_diff = df_sorted["Difference (Decimal)"].iloc[0]
+        running_overtime = float(first_row_diff) if first_row_diff not in ["", None] and pd.notna(first_row_diff) else 0
+    
     overtime_list = []
     holiday_days = []
     remaining_holiday_days = holiday_days_count if holiday_days_count else 0  # Initialize holiday days count
@@ -148,46 +156,50 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
         row_date_obj = pd.to_datetime(row["Date"]).date()
         
-        # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
-        if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
-            running_overtime = float(row["Difference (Decimal)"])
-        
-        if running_overtime is not None:
+        # Skip overtime calculation for first row if initial_overtime is "00:00"
+        if idx == 0 and initial_overtime == "00:00":
             running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         else:
-            running_overtime_str = "00:00"
-        
-        # If this row is a holiday event date...
-        if row_date in holiday_dates:
-            work_str = row["Work Time"]
-            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
+            # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
+            if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
+                running_overtime = float(row["Difference (Decimal)"])
             
-            # Reward only if employee worked.
-            if worked > 0:
-                multiplication = float(row["Multiplication"])
-                worked = worked * multiplication
-                # Sum extra hours to overtime balance
-                if running_overtime is not None and idx > 0 or initial_overtime != "00:00":
-                    running_overtime = running_overtime + worked
-                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-        else:
-            work_str = row["Work Time"]
-            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-            standard_work_hours = hhmm_to_decimal(row["Standard Time"])
+            if running_overtime is not None:
+                running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+            else:
+                running_overtime_str = "00:00"
             
-            if worked < standard_work_hours:
-                not_worked_hours = standard_work_hours - worked
-                #  Unsum not worked hours from overtime balance
-                if running_overtime is not None:
-                    running_overtime = running_overtime - not_worked_hours
-                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-            elif worked > standard_work_hours:
-                extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
+            # If this row is a holiday event date...
+            if row_date in holiday_dates:
+                work_str = row["Work Time"]
+                worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
                 
-                # Sum extra hours to overtime balance
-                if running_overtime is not None:
-                    running_overtime = running_overtime + extra_hours
-                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+                # Reward only if employee worked.
+                if worked > 0:
+                    multiplication = float(row["Multiplication"])
+                    worked = worked * multiplication
+                    # Sum extra hours to overtime balance
+                    if running_overtime is not None and idx > 0 or initial_overtime != "00:00":
+                        running_overtime = running_overtime + worked
+                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+            else:
+                work_str = row["Work Time"]
+                worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
+                standard_work_hours = hhmm_to_decimal(row["Standard Time"])
+                
+                if worked < standard_work_hours:
+                    not_worked_hours = standard_work_hours - worked
+                    #  Unsum not worked hours from overtime balance
+                    if running_overtime is not None:
+                        running_overtime = running_overtime - not_worked_hours
+                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+                elif worked > standard_work_hours:
+                    extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
+                    
+                    # Sum extra hours to overtime balance
+                    if running_overtime is not None:
+                        running_overtime = running_overtime + extra_hours
+                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         
         # Decrease holiday days count if the row's date is not in official_holidays and "Holiday" column is not empty
         if row_date_obj not in official_holidays and row["Holiday"] not in ["", None] and is_valid_holiday(row["Holiday"]):
