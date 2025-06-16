@@ -170,7 +170,7 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
                 running_overtime_str = "00:00"
             
             # If this row is a holiday event date...
-            if row_date in holiday_dates:
+            if row_date in holiday_dates or row["Holiday"] == "sick" or row["Holiday"] == "Sick":
                 work_str = row["Work Time"]
                 worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
                 
@@ -202,7 +202,7 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
                         running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         
         # Decrease holiday hours count if the row's date is not in official_holidays and "Holiday" column is not empty
-        if row_date_obj not in official_holidays and row["Holiday"] not in ["", None] and is_valid_holiday(row["Holiday"]):
+        if row_date_obj not in official_holidays and row["Holiday"] not in ["", "sick", "Sick", None] and is_valid_holiday(row["Holiday"]):
             # Convert standard work hours to decimal for holiday hours deduction
             standard_hours = hhmm_to_decimal(row["Standard Time"])
             remaining_holiday_hours = remaining_holiday_hours - standard_hours
@@ -339,23 +339,15 @@ def fetch_employee_temp_work_history(employee_id):
             df["OUT"] = df["OUT"].replace({np.nan: None}).astype("object").values
 
             # --- REORDER COLUMNS ---
-            desired_order = ["Day", "Date", "IN", "OUT", " Note"]  # Existing columns
+            desired_order = ["Day", "Date", "IN", "OUT", "Work Time", " Daily Total", " Note", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday", "Holiday Hours"]  # Existing columns
             for col in desired_order:
                 if col == " Note":
                     df[col] = df["Note"]
+                elif col == "Multiplication":
+                    df[col] = 1.0
                 elif col not in df.columns:
                     df[col] = None  # Fill in if missing from DB
-            
-            # --- ADD EXTRA EMPTY COLUMNS ---
-            additional_columns = ["Work Time", " Daily Total", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday"]
-            for col in additional_columns:
-                df[col] = None  # Add empty columns
-                if col == "Multiplication":
-                    df[col] = 1.0
-
-            # Final column order: existing desired + additional
-            final_columns = desired_order + additional_columns
-            df = df[final_columns]
+            df = df[desired_order]
 
             return df, df['Date'].iloc[0], df['Date'].iloc[-1]
 
