@@ -355,10 +355,10 @@ def main_work():
                 ["Pay Period", pay_period],
                 ["Hours worked", hours_worked],
                 ["Hours expected", hours_expected],
-                ["Overtime Balance", df_to_download["Hours Overtime Left"].iloc[-1]],
+                ["Overtime or Undertime Balance", df_to_download["Hours Overtime Left"].iloc[-1]],
                 ["Remaining Holiday Hours", df_to_download["Holiday Hours"].iloc[-1]],
-                ["Breaks Taken", f"{breaks_count} (Total: {breaks_duration})"],
-                ["Availability", total_hours_availability]
+                ["Total Sick Days", df_to_download["Holiday"].apply(lambda x: 1 if x == "sick" or x == "Sick" else 0).sum()],
+                ["Total Available Time Off", decimal_hours_to_hhmmss(hhmm_to_decimal(df_to_download["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(df_to_download["Hours Overtime Left"].iloc[-1]))]
             ]
 
             summary_table = Table(summary_data, colWidths=[180, 180])
