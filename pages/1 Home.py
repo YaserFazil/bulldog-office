@@ -422,7 +422,7 @@ def main():
             ["Hours worked", hours_worked],
             ["Hours expected", hours_expected],
             ["Overtime Balance", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
-            ["Remaining Holidays", updated_df_pdf["Holiday Hours"].iloc[-1]],
+            ["Remaining Holiday Hours", updated_df_pdf["Holiday Hours"].iloc[-1]],
             ["Breaks Taken", f"{breaks_count} (Total: {breaks_duration})"],
             ["Availability", total_hours_availability]
         ]
@@ -454,7 +454,7 @@ def main():
             max(
                 len(str(col)),  # Length of the column header
                 max(len(str(item)) for item in df_to_download[col].astype(str).values)  # Length of longest value
-            ) * 5.3  # Width multiplier (adjust as needed for your font)
+            ) * 4.9  # Width multiplier (adjust as needed for your font)
             for col in df_to_download.columns
         ]
 
