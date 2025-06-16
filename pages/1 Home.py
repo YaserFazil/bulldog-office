@@ -121,12 +121,13 @@ def main():
             all_usernames = get_employees(employee_name)
             selected_username = st.selectbox("Selected Employee", all_usernames)
         employee_id, full_name = get_employee_id(selected_username)
-        old_work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
-        latest_holiday_day = previous_holiday_days if previous_holiday_days else int(old_work_history["Holiday Days"].iloc[-1]) if "Holiday Days" in old_work_history and old_work_history["Holiday Days"].iloc[-1] else int(0)
+        old_work_history, previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(employee_id)
         latest_hours_overtime = previous_hours_overtime if previous_hours_overtime else old_work_history["Hours Overtime Left"].iloc[-1] if "Hours Overtime Left" in old_work_history and old_work_history["Hours Overtime Left"].iloc[-1] else "00:00"
         col3, col4, colstnhr = st.columns(3)
         with col3:
-            holiday_days = st.number_input("**Holiday Days**", value=latest_holiday_day)
+            holiday_hours = st.text_input("**Holiday Hours**", value="00:00")
+            holiday_hours_str = holiday_hours
+            holiday_hours = float(hhmm_to_decimal(holiday_hours))
 
         with col4:
             hours_overtime = st.text_input("**Hours Overtime**", value=latest_hours_overtime)
@@ -162,7 +163,7 @@ def main():
         data_df['Multiplication'] = multiplication_input
         data_df['Hours Overtime Left'] = None 
         data_df['Holiday'] = None
-        data_df['Holiday Days'] = None
+        data_df['Holiday Hours'] = None
 
         # Load holiday events from the JSON file.
         calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
@@ -236,7 +237,7 @@ def main():
                 )
                 
                 # Compute running holiday hours using the extracted holiday dates.
-                df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
+                df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
                 
                 st.session_state["edited_data"] = df
                 st.success("Holiday hours calculated and updated!")
@@ -355,7 +356,7 @@ def main():
         total_hours_availability = decimal_hours_to_hhmmss(total_daily)
 
         # Update column selection and ordering
-        desired_columns = ["Date", " Daily Total", "Break", "Day", "Holiday", "Holiday Days", 
+        desired_columns = ["Date", " Daily Total", "Break", "Day", "Holiday", "Holiday Hours", 
                         "Hours Overtime Left", "IN", "OUT", "Standard Time", "Multiplication", "Work Time"]
         df_to_download = df_to_download[desired_columns]
 
@@ -421,7 +422,7 @@ def main():
             ["Hours worked", hours_worked],
             ["Hours expected", hours_expected],
             ["Overtime Balance", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
-            ["Remaining Holidays", updated_df_pdf["Holiday Days"].iloc[-1]],
+            ["Remaining Holidays", updated_df_pdf["Holiday Hours"].iloc[-1]],
             ["Breaks Taken", f"{breaks_count} (Total: {breaks_duration})"],
             ["Availability", total_hours_availability]
         ]

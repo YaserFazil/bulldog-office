@@ -21,7 +21,7 @@ def main_work():
     
     if selected_username:
         employee_id, full_name = get_employee_id(selected_username)
-        work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
+        work_history, previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(employee_id)
         if work_history.empty:
             st.warning("No work history found for this employee.")
             return
@@ -40,8 +40,8 @@ def main_work():
             period_loaded = st.button("Load selected period")
         if period_loaded:
             # # Fetch filtered data based on employee selection
-            work_history, previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id, pay_period_from_selected, pay_period_to_selected)
-            latest_holiday_day = previous_holiday_days if previous_holiday_days else int(work_history["Holiday Days"].iloc[0]) if "Holiday Days" in work_history and work_history["Holiday Days"].iloc[0] else int(0)
+            work_history, previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(employee_id, pay_period_from_selected, pay_period_to_selected)
+            latest_holiday_hours = previous_holiday_hours if previous_holiday_hours else work_history["Holiday Hours"].iloc[0] if "Holiday Hours" in work_history and work_history["Holiday Hours"].iloc[0] else "00:00"
             latest_hours_overtime_left = (
                 previous_hours_overtime
                 if previous_hours_overtime is not None
@@ -50,16 +50,18 @@ def main_work():
                 else "00:00"
             )
 
-            st.session_state["latest_holiday_days_left"] = latest_holiday_day
+            st.session_state["latest_holiday_hours_left"] = latest_holiday_hours
             st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
             st.session_state["edited_work_history_data"] = work_history
             st.rerun()
         if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
-            holiday_day_col, hours_overtime_col = st.columns(2)
+            holiday_hours_col, hours_overtime_col = st.columns(2)
             col4, col5, col6 = st.columns(3)
-            with holiday_day_col:
-                holiday_days = st.number_input("**Holiday Days Left:**", value=st.session_state["latest_holiday_days_left"])
+            with holiday_hours_col:
+                holiday_hours = st.text_input("**Holiday Hours Left:**", value=st.session_state["latest_holiday_hours_left"])
+                holiday_hours_str = holiday_hours
+                holiday_hours = float(hhmm_to_decimal(holiday_hours))
             with hours_overtime_col:
                 hours_overtime = st.text_input("**Hours Overtime:**", value=st.session_state["latest_hours_overtime_left"])
                 hours_overtime_str = hours_overtime
@@ -110,7 +112,7 @@ def main_work():
                     "Difference (Decimal)",
                     "Multiplication",
                     "Holiday",
-                    "Holiday Days",
+                    "Holiday Hours",
                     "Hours Overtime Left",
                     "employee_id",
                     "_id"
@@ -169,7 +171,7 @@ def main_work():
                     )
                     
                     # Compute running holiday hours using the extracted holiday dates.
-                    df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_days, hours_overtime_str)
+                    df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
                     
                     st.session_state["edited_work_history_data"] = df
                     st.success("Holiday hours calculated and updated!")
@@ -184,7 +186,7 @@ def main_work():
                     if work_history_created["success"] == True:
                         st.success("Successfully Saved Data!")
                         
-                        st.session_state["edited_work_history_data"], previous_hours_overtime, previous_holiday_days = fetch_employee_work_history(employee_id)
+                        st.session_state["edited_work_history_data"], previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(employee_id)
                         st.rerun()
                     else:
                         st.error(f"Couldn't save work history: {work_history_created}")
@@ -289,7 +291,7 @@ def main_work():
             total_hours_availability = decimal_hours_to_hhmmss(total_daily)
 
             # Update column selection and ordering
-            desired_columns = ["Date", " Daily Total", "Break", "Day", "Holiday", "Holiday Days", 
+            desired_columns = ["Date", " Daily Total", "Break", "Day", "Holiday", "Holiday Hours", 
                             "Hours Overtime Left", "IN", "OUT", "Standard Time", "Multiplication", "Work Time"]
             df_to_download = df_to_download[desired_columns]
 
@@ -354,7 +356,7 @@ def main_work():
                 ["Hours worked", hours_worked],
                 ["Hours expected", hours_expected],
                 ["Overtime Balance", df_to_download["Hours Overtime Left"].iloc[-1]],
-                ["Remaining Holidays", df_to_download["Holiday Days"].iloc[-1]],
+                ["Remaining Holidays", df_to_download["Holiday Hours"].iloc[-1]],
                 ["Breaks Taken", f"{breaks_count} (Total: {breaks_duration})"],
                 ["Availability", total_hours_availability]
             ]

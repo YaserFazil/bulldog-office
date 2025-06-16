@@ -135,7 +135,7 @@ def is_valid_holiday(value):
 # ----------------------
 # 7. New Helper: Compute a running holiday balance row-by-row
 # ----------------------
-def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_days_count, initial_overtime="00:00"):
+def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_hours_count, initial_overtime="00:00"):
     # Ensure DataFrame is sorted by Date ascending.
     df_sorted = df.sort_values(by="Date").copy()
     
@@ -148,9 +148,9 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         running_overtime = float(first_row_diff) if first_row_diff not in ["", None] and pd.notna(first_row_diff) else 0
     
     overtime_list = []
-    holiday_days = []
-    remaining_holiday_days = holiday_days_count if holiday_days_count else 0  # Initialize holiday days count
-    
+    holiday_hours_list = []
+    remaining_holiday_hours = holiday_hours_count if holiday_hours_count else 0  # Initialize holiday hours count
+    remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
     # Process each row in chronological order.
     for idx, row in df_sorted.iterrows():
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
@@ -201,15 +201,18 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
                         running_overtime = running_overtime + extra_hours
                         running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         
-        # Decrease holiday days count if the row's date is not in official_holidays and "Holiday" column is not empty
+        # Decrease holiday hours count if the row's date is not in official_holidays and "Holiday" column is not empty
         if row_date_obj not in official_holidays and row["Holiday"] not in ["", None] and is_valid_holiday(row["Holiday"]):
-            remaining_holiday_days = max(0, remaining_holiday_days - 1)
+            # Convert standard work hours to decimal for holiday hours deduction
+            standard_hours = hhmm_to_decimal(row["Standard Time"])
+            remaining_holiday_hours = remaining_holiday_hours - standard_hours
+            remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
         
-        holiday_days.append(remaining_holiday_days)
+        holiday_hours_list.append(remaining_holiday_hours_str)
         overtime_list.append(running_overtime_str)
     
     df_sorted["Hours Overtime Left"] = overtime_list
-    df_sorted["Holiday Days"] = holiday_days
+    df_sorted["Holiday Hours"] = holiday_hours_list
     
     return df_sorted
 
@@ -274,7 +277,7 @@ def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
         
         # Fetch the record before the start_date
         previous_hours_overtime = None
-        previous_holiday_days = None
+        previous_holiday_hours = None
         if start_date:
             prev_query = {"employee_id": str(employee_id), "Date": {"$lt": datetime.combine(start_date, datetime.min.time())}}
             prev_record = work_history_collection.find(prev_query).sort("Date", DESCENDING).limit(1)
@@ -284,8 +287,8 @@ def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
             elif not prev_record:
                 previous_hours_overtime = "00:00"
                 
-            if prev_record and "Holiday Days" in prev_record[0] and prev_record[0]["Holiday Days"]:
-                previous_holiday_days = prev_record[0]["Holiday Days"]
+            if prev_record and "Holiday Hours" in prev_record[0] and prev_record[0]["Holiday Hours"]:
+                previous_holiday_hours = prev_record[0]["Holiday Hours"]
         # Add date filtering if start_date and end_date are provided
         if start_date and end_date:
             query["Date"] = {"$gte": datetime.combine(start_date, datetime.min.time()), 
@@ -298,9 +301,9 @@ def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
             work_history['Date'] = pd.to_datetime(work_history['Date']).dt.date
             work_history["IN"] = work_history["IN"].replace({np.nan: None}).astype("object").values
             work_history["OUT"] = work_history["OUT"].replace({np.nan: None}).astype("object").values
-            return work_history, previous_hours_overtime, previous_holiday_days
+            return work_history, previous_hours_overtime, previous_holiday_hours
         
-        return pd.DataFrame(), previous_hours_overtime, previous_holiday_days
+        return pd.DataFrame(), previous_hours_overtime, previous_holiday_hours
     except Exception as e:
         st.error(f"Something went wrong while fetching work history: {e}")
         return None, None, None
@@ -344,7 +347,7 @@ def fetch_employee_temp_work_history(employee_id):
                     df[col] = None  # Fill in if missing from DB
             
             # --- ADD EXTRA EMPTY COLUMNS ---
-            additional_columns = ["Work Time", " Daily Total", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday", "Holiday Days"]
+            additional_columns = ["Work Time", " Daily Total", "Break", "Standard Time", "Difference (Decimal)", "Multiplication", "Hours Overtime Left", "Holiday"]
             for col in additional_columns:
                 df[col] = None  # Add empty columns
                 if col == "Multiplication":
