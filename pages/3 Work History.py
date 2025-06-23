@@ -72,7 +72,7 @@ def main_work():
                 standard_work_hours_str = standard_work_hours
                 standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
             with col5:
-                break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:30")
+                break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
             with col6:
                 break_hours = st.text_input("**Break Hour(s)**", value="00:30")
 

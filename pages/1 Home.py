@@ -141,7 +141,7 @@ def main():
 
         colu1, colu2, colu3 = st.columns(3)
         with colu1:
-            break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:30")
+            break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
         with colu2:
             break_hours = st.text_input("**Break Hour(s)**", value="00:30")
         with colu3:
