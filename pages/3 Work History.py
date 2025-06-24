@@ -141,7 +141,14 @@ def main_work():
             if "original_work_history_data" not in st.session_state:
                 st.session_state["original_work_history_data"] = current_data.copy()
             
+            # Get the original data for comparison
             original_data = st.session_state.get("original_work_history_data", current_data)
+            
+            # Helper function to normalize values for comparison
+            def normalize_value(val):
+                if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
+                    return ""
+                return str(val).strip()
             
             # Determine the correct Note column name
             note_column = None
@@ -154,59 +161,44 @@ def main_work():
             # Create a DataFrame to track which cells have been manually modified
             changed_cells = pd.DataFrame(False, index=current_data.index, columns=current_data.columns)
             
-            # Helper function to normalize values for comparison
-            def normalize_value(val):
-                if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
-                    return ""
-                return str(val).strip()
-            
-            # Check for manual modifications based on the manual_modifications field
-            if 'manual_modifications' in current_data.columns:
-                for idx in current_data.index:
-                    manual_mods = current_data.loc[idx, 'manual_modifications']
-                    if pd.notna(manual_mods) and str(manual_mods).strip() != "":
-                        # Parse the manual_modifications field
-                        modified_columns = [col.strip() for col in str(manual_mods).split(",")]
+            # Check for manual modifications and add yellow styling
+            for row_idx, (_, row) in enumerate(current_data.iterrows(), start=1):  # start=1 because row 0 is header
+                for col_name in current_data.columns:
+                    if col_name in current_data.columns:
+                        col_idx = current_data.columns.get_loc(col_name)
+                        current_val = normalize_value(row[col_name])
                         
-                        # Mark the corresponding columns as changed
-                        for col in modified_columns:
-                            # Handle both " Note" and "Note" column names
-                            if col in current_data.columns:
-                                changed_cells.loc[idx, col] = True
-                            elif col == " Note" and "Note" in current_data.columns:
-                                changed_cells.loc[idx, "Note"] = True
-                            elif col == "Note" and " Note" in current_data.columns:
-                                changed_cells.loc[idx, " Note"] = True
-            
-            # Also check for new changes by comparing with original data
-            columns_to_compare = ["IN", "OUT"]
-            if note_column:
-                columns_to_compare.append(note_column)
-                
-            for col in columns_to_compare:
-                if col in current_data.columns and col in original_data.columns:
-                    # Normalize both current and original values before comparison
-                    current_normalized = current_data[col].apply(normalize_value)
-                    original_normalized = original_data[col].apply(normalize_value)
-                    new_changes = current_normalized != original_normalized
-                    changed_cells[col] = changed_cells[col] | new_changes
-            
-            # Update manual_modifications field based on new changes
-            if not changed_cells.empty:
-                for idx in current_data.index:
-                    modified_columns = []
-                    for col in columns_to_compare:
-                        if col in changed_cells.columns and changed_cells.loc[idx, col]:
-                            modified_columns.append(col)
-                    
-                    if modified_columns:
-                        current_data.loc[idx, 'manual_modifications'] = ", ".join(modified_columns)
-                    else:
-                        current_data.loc[idx, 'manual_modifications'] = None
-            
-            # Don't update session state here - it causes the editor to reset
-            # Only update session state when buttons are clicked or when explicitly needed
-            # st.session_state["edited_work_history_data"] = current_data
+                        # Check if this cell was manually modified
+                        is_modified = False
+                        
+                        # First check if manual_modifications field exists and has data
+                        if 'manual_modifications' in current_data.columns:
+                            # Find the corresponding row in current_data
+                            matching_row = current_data[
+                                (current_data['Date'] == row['Date']) & 
+                                (current_data['Day'] == row['Day'])
+                            ]
+                            if not matching_row.empty:
+                                manual_mods = matching_row.iloc[0]['manual_modifications']
+                                if pd.notna(manual_mods) and str(manual_mods).strip() != "":
+                                    modified_cols = [col.strip() for col in str(manual_mods).split(",")]
+                                    if col_name in modified_cols:
+                                        is_modified = True
+                        
+                        # Fallback: compare with original data if manual_modifications not available
+                        if not is_modified and col_name in original_data.columns:
+                            # Find the corresponding row in original_data
+                            matching_original = original_data[
+                                (original_data['Date'] == row['Date']) & 
+                                (original_data['Day'] == row['Day'])
+                            ]
+                            if not matching_original.empty:
+                                original_val = normalize_value(matching_original.iloc[0][col_name])
+                                if current_val != original_val:
+                                    is_modified = True
+                        
+                        if is_modified:
+                            changed_cells.loc[row_idx - 1, col_name] = True
             
             # Apply styling to highlight changed cells
             if not changed_cells.empty and changed_cells.any().any():
@@ -467,6 +459,12 @@ def main_work():
                             "Hours Overtime Left", "IN", "OUT", "Standard Time", "Multiplication", "Work Time"]
             df_to_download = df_to_download[desired_columns]
 
+            # Helper function to normalize values for comparison (for PDF)
+            def normalize_value_pdf(val):
+                if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
+                    return ""
+                return str(val).strip()
+
             # --- Build the PDF File with Enhanced Styling ---
             pdf_buffer = BytesIO()
             doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4),
@@ -533,6 +531,14 @@ def main_work():
                 ["Total Available Time Off", decimal_hours_to_hhmmss(hhmm_to_decimal(df_to_download["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(df_to_download["Hours Overtime Left"].iloc[-1]))]
             ]
 
+            # Calculate Total Available Time Off in Days
+            total_available_hours = hhmm_to_decimal(df_to_download["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(df_to_download["Hours Overtime Left"].iloc[-1])
+            standard_work_hours_per_day = hhmm_to_decimal(standard_work_hours_str)  # Convert "08:00" to decimal hours
+            total_available_days = total_available_hours / standard_work_hours_per_day if standard_work_hours_per_day > 0 else 0
+            
+            # Add the days calculation to the summary
+            summary_data.append(["Total Available Time Off (Days)", f"{total_available_days:.1f} days"])
+
             summary_table = Table(summary_data, colWidths=[180, 180])
             summary_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#3498db")),
@@ -553,6 +559,19 @@ def main_work():
             elements.append(Paragraph("DETAILED WORK LOG", header_style))
             elements.append(Spacer(1, 20))
 
+            # Add legend for yellow indicators
+            legend_style = ParagraphStyle(
+                'Legend',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=10,
+                textColor=colors.HexColor("#2c3e50"),
+                alignment=0,
+                spaceAfter=10
+            )
+            elements.append(Paragraph("Note: Cells with yellow background indicate manually modified data from the original records.", legend_style))
+            elements.append(Spacer(1, 10))
+
             # Create styled data table
             table_data = [df_to_download.columns.tolist()] + df_to_download.astype(str).values.tolist()
             # Adjust the column widths based on the longest value between the column name and its data
@@ -570,7 +589,8 @@ def main_work():
             # Create the table with calculated column widths
             data_table = Table(table_data, repeatRows=1, colWidths=max_column_widths)
 
-            data_table.setStyle(TableStyle([
+            # Prepare styling for yellow indicators
+            table_style = [
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2ecc71")),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
                 ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
@@ -580,7 +600,68 @@ def main_work():
                 ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#f5f6fa")]),
                 ('LEFTPADDING', (0,0), (-1,-1), 5),
                 ('RIGHTPADDING', (0,0), (-1,-1), 5),
-            ]))
+            ]
+
+            # Add yellow background for manually modified cells
+            # Use the current data from the editor for accurate modification tracking
+            current_data_for_pdf = edited_work_history_data
+            
+            # Determine the correct Note column name
+            note_column = None
+            if " Note" in df_to_download.columns:
+                note_column = " Note"
+            elif "Note" in df_to_download.columns:
+                note_column = "Note"
+            
+            # Columns to check for modifications
+            columns_to_check = ["IN", "OUT"]
+            if note_column:
+                columns_to_check.append(note_column)
+            
+            # Get the original data for comparison
+            original_data = st.session_state.get("original_work_history_data", current_data_for_pdf)
+            
+            # Check for manual modifications and add yellow styling
+            for row_idx, (_, row) in enumerate(df_to_download.iterrows(), start=1):  # start=1 because row 0 is header
+                for col_name in columns_to_check:
+                    if col_name in df_to_download.columns:
+                        col_idx = df_to_download.columns.get_loc(col_name)
+                        current_val = normalize_value_pdf(row[col_name])
+                        
+                        # Check if this cell was manually modified
+                        is_modified = False
+                        
+                        # First check if manual_modifications field exists and has data
+                        if 'manual_modifications' in current_data_for_pdf.columns:
+                            # Find the corresponding row in current_data_for_pdf
+                            matching_row = current_data_for_pdf[
+                                (current_data_for_pdf['Date'] == row['Date']) & 
+                                (current_data_for_pdf['Day'] == row['Day'])
+                            ]
+                            if not matching_row.empty:
+                                manual_mods = matching_row.iloc[0]['manual_modifications']
+                                if pd.notna(manual_mods) and str(manual_mods).strip() != "":
+                                    modified_cols = [col.strip() for col in str(manual_mods).split(",")]
+                                    if col_name in modified_cols:
+                                        is_modified = True
+                        
+                        # Fallback: compare with original data if manual_modifications not available
+                        if not is_modified and col_name in original_data.columns:
+                            # Find the corresponding row in original_data
+                            matching_original = original_data[
+                                (original_data['Date'] == row['Date']) & 
+                                (original_data['Day'] == row['Day'])
+                            ]
+                            if not matching_original.empty:
+                                original_val = normalize_value_pdf(matching_original.iloc[0][col_name])
+                                if current_val != original_val:
+                                    is_modified = True
+                        
+                        if is_modified:
+                            table_style.append(('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), colors.HexColor("#fff3cd")))
+                            table_style.append(('GRID', (col_idx, row_idx), (col_idx, row_idx), 2, colors.HexColor("#ffc107")))
+
+            data_table.setStyle(TableStyle(table_style))
             elements.append(data_table)
 
             # Build document with header/footer

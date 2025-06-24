@@ -603,6 +603,14 @@ def main():
             ["Total Available Time Off", decimal_hours_to_hhmmss(hhmm_to_decimal(updated_df_pdf["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(updated_df_pdf["Hours Overtime Left"].iloc[-1]))]
         ]
 
+        # Calculate Total Available Time Off in Days
+        total_available_hours = hhmm_to_decimal(updated_df_pdf["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(updated_df_pdf["Hours Overtime Left"].iloc[-1])
+        standard_work_hours_per_day = standard_work_hours # Convert "08:00" to decimal hours
+        total_available_days = total_available_hours / standard_work_hours_per_day if standard_work_hours_per_day > 0 else 0
+        
+        # Add the days calculation to the summary
+        summary_data.append(["Total Available Time Off (Days)", f"{total_available_days:.1f} days"])
+
         summary_table = Table(summary_data, colWidths=[180, 180])
         summary_table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#3498db")),
@@ -623,6 +631,19 @@ def main():
         elements.append(Paragraph("DETAILED WORK LOG", header_style))
         elements.append(Spacer(1, 20))
 
+        # Add legend for yellow indicators
+        legend_style = ParagraphStyle(
+            'Legend',
+            parent=styles['Normal'],
+            fontName='Helvetica',
+            fontSize=10,
+            textColor=colors.HexColor("#2c3e50"),
+            alignment=0,
+            spaceAfter=10
+        )
+        elements.append(Paragraph("Note: Cells with yellow background indicate manually modified data from the original upload.", legend_style))
+        elements.append(Spacer(1, 10))
+
         # Create styled data table
         table_data = [df_to_download.columns.tolist()] + df_to_download.astype(str).values.tolist()
         # Adjust the column widths based on the longest value between the column name and its data
@@ -640,7 +661,8 @@ def main():
         # Create the table with calculated column widths
         data_table = Table(table_data, repeatRows=1, colWidths=max_column_widths)
 
-        data_table.setStyle(TableStyle([
+        # Prepare styling for yellow indicators
+        table_style = [
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2ecc71")),
             ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
             ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
@@ -650,7 +672,55 @@ def main():
             ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#f5f6fa")]),
             ('LEFTPADDING', (0,0), (-1,-1), 5),
             ('RIGHTPADDING', (0,0), (-1,-1), 5),
-        ]))
+        ]
+
+        # Add yellow background for manually modified cells
+        # Determine the correct Note column name
+        note_column = None
+        if " Note" in df_to_download.columns:
+            note_column = " Note"
+        elif "Note" in df_to_download.columns:
+            note_column = "Note"
+        
+        # Columns to check for modifications
+        columns_to_check = ["IN", "OUT"]
+        if note_column:
+            columns_to_check.append(note_column)
+        
+        # Get the original data for comparison
+        original_data = st.session_state.get("original_data", df_to_download)
+        
+        # Helper function to normalize values for comparison
+        def normalize_value(val):
+            if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
+                return ""
+            return str(val).strip()
+        
+        # Check for manual modifications and add yellow styling
+        for row_idx, (_, row) in enumerate(df_to_download.iterrows(), start=1):  # start=1 because row 0 is header
+            for col_name in columns_to_check:
+                if col_name in df_to_download.columns:
+                    col_idx = df_to_download.columns.get_loc(col_name)
+                    current_val = normalize_value(row[col_name])
+                    
+                    # Check if this cell was manually modified
+                    is_modified = False
+                    if 'manual_modifications' in row and pd.notna(row['manual_modifications']):
+                        modified_cols = [col.strip() for col in str(row['manual_modifications']).split(",")]
+                        if col_name in modified_cols:
+                            is_modified = True
+                    else:
+                        # Fallback: compare with original data
+                        if col_name in original_data.columns and row_idx <= len(original_data):
+                            original_val = normalize_value(original_data.iloc[row_idx-1][col_name])
+                            if current_val != original_val:
+                                is_modified = True
+                    
+                    if is_modified:
+                        table_style.append(('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), colors.HexColor("#fff3cd")))
+                        table_style.append(('GRID', (col_idx, row_idx), (col_idx, row_idx), 2, colors.HexColor("#ffc107")))
+
+        data_table.setStyle(TableStyle(table_style))
         elements.append(data_table)
 
         # Build document with header/footer
