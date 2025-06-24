@@ -21,6 +21,16 @@ def main():
         return
     st.title("Timecard Report Uploader")
     
+    # Add CSS for highlighting changed cells
+    st.markdown("""
+    <style>
+    .changed-cell {
+        background-color: #fff3cd !important;
+        border: 2px solid #ffc107 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     def reset_file():
         if "edited_data" in st.session_state:
             st.session_state.pop("edited_data")
@@ -158,6 +168,20 @@ def main():
         new_cols[1] = "Date"
         data_df.columns = new_cols
         data_df['Date'] = pd.to_datetime(data_df['Date'], format="%Y%m%d", errors="coerce").dt.date
+        
+        # Clean up the Note column to handle nan and None properly
+        data_df[' Note'] = data_df[' Note'].apply(
+            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+        )
+        
+        # Clean up IN and OUT columns as well
+        data_df['IN'] = data_df['IN'].apply(
+            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+        )
+        data_df['OUT'] = data_df['OUT'].apply(
+            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+        )
+        
         data_df['Break'] = None
         data_df['Standard Time'] = decimal_hours_to_hhmmss(standard_work_hours)
         data_df['Difference'] = None
@@ -197,12 +221,67 @@ def main():
     
         if "edited_data" not in st.session_state:
             st.session_state["edited_data"] = data_df
+            # Store original data for comparison
+            st.session_state["original_data"] = data_df.copy()
     
         edited_data = st.data_editor(
             data=st.session_state["edited_data"],
             num_rows="dynamic",
             key="edited_data_editor"
-        )
+        )       
+
+    
+        # Compare current data with original data to find differences
+        current_data = st.session_state["edited_data"]
+        original_data = st.session_state.get("original_data", current_data)
+        
+        # Create a DataFrame to track which cells have changed
+        changed_cells = pd.DataFrame(False, index=current_data.index, columns=current_data.columns)
+        
+        # Helper function to normalize values for comparison
+        def normalize_value(val):
+            if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
+                return ""
+            return str(val).strip()
+        
+        # Compare IN, OUT, and Note columns
+        for col in ["IN", "OUT", " Note"]:
+            if col in current_data.columns and col in original_data.columns:
+                # Normalize both current and original values before comparison
+                current_normalized = current_data[col].apply(normalize_value)
+                original_normalized = original_data[col].apply(normalize_value)
+                changed_cells[col] = current_normalized != original_normalized
+        
+        # Apply styling to highlight changed cells
+        if not changed_cells.empty:
+            # Create a styled DataFrame for display
+            styled_data = st.session_state["edited_data"].copy()
+            
+            # Add a visual indicator for changed cells
+            for col in ["IN", "OUT", " Note"]:
+                if col in changed_cells.columns:
+                    changed_mask = changed_cells[col]
+                    
+                    # Only add yellow indicator if the cell actually has a value
+                    for idx in changed_mask[changed_mask].index:
+                        current_val = styled_data.loc[idx, col]
+                        if (pd.isna(current_val) or current_val is None or 
+                            str(current_val).strip() == "" or 
+                            str(current_val).lower() in ["nan", "none", "null"]):
+                            styled_data.loc[idx, col] = "🟡 (empty)"
+                        else:
+                            styled_data.loc[idx, col] = "🟡 " + str(current_val)
+            
+            # Display the styled data
+            st.dataframe(
+                styled_data,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Show legend
+            st.info("🟡 Yellow indicator shows cells that have been modified from the original data")
+
         col10, col11, col12 = st.columns(3)
         with col10:
             if st.button("Calculate Work Duration", use_container_width=True):
