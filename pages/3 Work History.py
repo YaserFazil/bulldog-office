@@ -126,6 +126,20 @@ def main_work():
             with col1:
                 if st.button("Calculate Work Duration", use_container_width=True):
                     updated_df = safe_convert_to_df(edited_work_history_data).copy()
+                    
+                    # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
+                    calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
+                    calendar_events_date = {
+                        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                        for date_str, event in calendar_events.items()
+                    }
+                    updated_df['Multiplication'] = updated_df.apply(
+                        lambda row: 2.0 if (
+                            (row['Date'] in calendar_events_date and row['Date'].weekday() != 5)  # Holiday but not Saturday
+                        ) else 1.0, 
+                        axis=1
+                    )
+                    
                     updated_df[" Daily Total"] = updated_df.apply(
                         lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
                     )

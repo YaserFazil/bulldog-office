@@ -139,14 +139,16 @@ def main():
             standard_work_hours = st.text_input("**Standard Work Hours**", value="08:00")
             standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
 
-        colu1, colu2, colu3 = st.columns(3)
-        with colu1:
-            break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
-        with colu2:
-            break_hours = st.text_input("**Break Hour(s)**", value="00:30")
-        with colu3:
-            multiplication_input = st.number_input("**Multiplication**", value=1.0)
-
+        # colu1, colu2, colu3 = st.columns(3)
+        # with colu1:
+        #     break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
+        # with colu2:
+        #     break_hours = st.text_input("**Break Hour(s)**", value="00:30")
+        # with colu3:
+        #     multiplication_input = st.number_input("**Multiplication**", value=1.0)
+        break_rule_hours = "06:00"
+        break_hours = "00:30"
+        multiplication_input = 1.0
     
         # --- Second Read: Extract the Main Data ---
         file_buffer.seek(0)
@@ -177,6 +179,14 @@ def main():
         # Map the holiday events onto the DataFrame using the converted keys.
         data_df['Holiday'] = data_df['Date'].map(calendar_events_date)
 
+        # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
+        data_df['Multiplication'] = data_df.apply(
+            lambda row: 2.0 if (
+                (row['Date'] in calendar_events_date and row['Date'].weekday() != 5)  # Holiday but not Saturday
+            ) else multiplication_input, 
+            axis=1
+        )
+
         # Compute work duration (Daily Total) and adjust Work Time and Break.
         data_df[" Daily Total"] = data_df.apply(
             lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
@@ -198,6 +208,15 @@ def main():
             if st.button("Calculate Work Duration", use_container_width=True):
                 updated_df = safe_convert_to_df(edited_data).copy()
                 updated_df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
+                
+                # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
+                updated_df['Multiplication'] = updated_df.apply(
+                    lambda row: 2.0 if (
+                        (row['Date'] in calendar_events_date and row['Date'].weekday() != 5)  # Holiday but not Saturday
+                    ) else multiplication_input, 
+                    axis=1
+                )
+                
                 updated_df[" Daily Total"] = updated_df.apply(
                     lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
                 )
