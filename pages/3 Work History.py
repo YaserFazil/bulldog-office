@@ -16,6 +16,16 @@ def main_work():
         return
     st.title("Work History Records")
     
+    # Add CSS for highlighting changed cells
+    st.markdown("""
+    <style>
+    .changed-cell {
+        background-color: #fff3cd !important;
+        border: 2px solid #ffc107 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     all_usernames = get_employees()
     selected_username = st.selectbox("Select Employee", all_usernames)
     
@@ -53,11 +63,13 @@ def main_work():
             st.session_state["latest_holiday_hours_left"] = latest_holiday_hours
             st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
             st.session_state["edited_work_history_data"] = work_history
+            # Reset original data for new period
+            if "original_work_history_data" in st.session_state:
+                st.session_state.pop("original_work_history_data")
             st.rerun()
         if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
-            holiday_hours_col, hours_overtime_col = st.columns(2)
-            col4, col5, col6 = st.columns(3)
+            holiday_hours_col, hours_overtime_col, col4 = st.columns(3)
             with holiday_hours_col:
                 holiday_hours = st.text_input("**Holiday Hours Left:**", value=st.session_state["latest_holiday_hours_left"])
                 holiday_hours_str = holiday_hours
@@ -71,11 +83,12 @@ def main_work():
                 standard_work_hours = st.text_input("**Standard Work Hours**", value="08:00")
                 standard_work_hours_str = standard_work_hours
                 standard_work_hours = int(hhmm_to_decimal(standard_work_hours))
-            with col5:
-                break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
-            with col6:
-                break_hours = st.text_input("**Break Hour(s)**", value="00:30")
-
+            # with col5:
+            #     break_rule_hours = st.text_input("**Break Rule Hour(s)**", value="06:00")
+            # with col6:
+            #     break_hours = st.text_input("**Break Hour(s)**", value="00:30")
+            break_rule_hours = "06:00"
+            break_hours = "00:30"
 
 
             # Define column configurations
@@ -121,6 +134,137 @@ def main_work():
                 key="edited_work_history_data_editor"
             )
             
+            # Process yellow indicators based on manual_modifications field
+            current_data = edited_work_history_data
+            
+            # Store original data for comparison if not already stored
+            if "original_work_history_data" not in st.session_state:
+                st.session_state["original_work_history_data"] = current_data.copy()
+            
+            original_data = st.session_state.get("original_work_history_data", current_data)
+            
+            # Determine the correct Note column name
+            note_column = None
+            if " Note" in current_data.columns:
+                note_column = " Note"
+            elif "Note" in current_data.columns:
+                note_column = "Note"
+            
+            
+            # Create a DataFrame to track which cells have been manually modified
+            changed_cells = pd.DataFrame(False, index=current_data.index, columns=current_data.columns)
+            
+            # Helper function to normalize values for comparison
+            def normalize_value(val):
+                if pd.isna(val) or val is None or str(val).strip() == "" or str(val).lower() in ["nan", "none", "null"]:
+                    return ""
+                return str(val).strip()
+            
+            # Check for manual modifications based on the manual_modifications field
+            if 'manual_modifications' in current_data.columns:
+                for idx in current_data.index:
+                    manual_mods = current_data.loc[idx, 'manual_modifications']
+                    if pd.notna(manual_mods) and str(manual_mods).strip() != "":
+                        # Parse the manual_modifications field
+                        modified_columns = [col.strip() for col in str(manual_mods).split(",")]
+                        
+                        # Mark the corresponding columns as changed
+                        for col in modified_columns:
+                            # Handle both " Note" and "Note" column names
+                            if col in current_data.columns:
+                                changed_cells.loc[idx, col] = True
+                            elif col == " Note" and "Note" in current_data.columns:
+                                changed_cells.loc[idx, "Note"] = True
+                            elif col == "Note" and " Note" in current_data.columns:
+                                changed_cells.loc[idx, " Note"] = True
+            
+            # Also check for new changes by comparing with original data
+            columns_to_compare = ["IN", "OUT"]
+            if note_column:
+                columns_to_compare.append(note_column)
+                
+            for col in columns_to_compare:
+                if col in current_data.columns and col in original_data.columns:
+                    # Normalize both current and original values before comparison
+                    current_normalized = current_data[col].apply(normalize_value)
+                    original_normalized = original_data[col].apply(normalize_value)
+                    new_changes = current_normalized != original_normalized
+                    changed_cells[col] = changed_cells[col] | new_changes
+            
+            # Update manual_modifications field based on new changes
+            if not changed_cells.empty:
+                for idx in current_data.index:
+                    modified_columns = []
+                    for col in columns_to_compare:
+                        if col in changed_cells.columns and changed_cells.loc[idx, col]:
+                            modified_columns.append(col)
+                    
+                    if modified_columns:
+                        current_data.loc[idx, 'manual_modifications'] = ", ".join(modified_columns)
+                    else:
+                        current_data.loc[idx, 'manual_modifications'] = None
+            
+            # Update session state with the edited data
+            st.session_state["edited_work_history_data"] = current_data
+            
+            # Apply styling to highlight changed cells
+            if not changed_cells.empty and changed_cells.any().any():
+                # Create a styled DataFrame for display
+                styled_data = current_data.copy()
+                
+                # Add a visual indicator for changed cells
+                columns_to_highlight = ["IN", "OUT"]
+                if note_column:
+                    columns_to_highlight.append(note_column)
+                
+                for col in columns_to_highlight:
+                    if col in changed_cells.columns:
+                        changed_mask = changed_cells[col]
+                        
+                        # Only add yellow indicator if the cell actually has a value
+                        for idx in changed_mask[changed_mask].index:
+                            current_val = styled_data.loc[idx, col]
+                            if (pd.isna(current_val) or current_val is None or 
+                                str(current_val).strip() == "" or 
+                                str(current_val).lower() in ["nan", "none", "null"]):
+                                styled_data.loc[idx, col] = "🟡 (empty)"
+                            else:
+                                styled_data.loc[idx, col] = "🟡 " + str(current_val)
+                
+                # Use the same column order as the data editor
+                column_order = [
+                    "Day", 
+                    "Date", 
+                    "IN", 
+                    "OUT", 
+                    "Work Time", 
+                    " Daily Total", 
+                    " Note",
+                    "Break",
+                    "Standard Time",
+                    "Difference",
+                    "Difference (Decimal)",
+                    "Multiplication",
+                    "Holiday",
+                    "Holiday Hours",
+                    "Hours Overtime Left",
+                    "employee_id",
+                    "_id"
+                ]
+                
+                # Reorder the styled data to match the data editor
+                styled_data = styled_data[column_order]
+                
+                # Display the styled data
+                st.dataframe(
+                    styled_data,
+                    use_container_width=True,
+                    hide_index=False
+                )
+                
+                # Show legend
+                st.info("🟡 Yellow indicator shows cells that have been manually modified from the original data")
+            
             col1, col2, col3 = st.columns(3)
             
             with col1:
@@ -157,6 +301,11 @@ def main_work():
                         lambda row: compute_time_difference(row.get("Work Time", ""), row.get("Standard Time", ""), row.get("Holiday", ""), False),
                         axis=1
                     )
+                    
+                    # Preserve manual_modifications field
+                    if 'manual_modifications' in st.session_state["edited_work_history_data"].columns:
+                        updated_df['manual_modifications'] = st.session_state["edited_work_history_data"]['manual_modifications']
+                    
                     st.session_state["edited_work_history_data"] = updated_df
                     st.rerun()
             
@@ -186,6 +335,10 @@ def main_work():
                     
                     # Compute running holiday hours using the extracted holiday dates.
                     df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
+                    
+                    # Preserve manual_modifications field
+                    if 'manual_modifications' in st.session_state["edited_work_history_data"].columns:
+                        df['manual_modifications'] = st.session_state["edited_work_history_data"]['manual_modifications']
                     
                     st.session_state["edited_work_history_data"] = df
                     st.success("Holiday hours calculated and updated!")
