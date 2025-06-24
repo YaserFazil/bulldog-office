@@ -39,6 +39,8 @@ def main():
             st.session_state.pop("employee_name")
             if "selected_employee" in st.session_state:
                 st.session_state.pop("selected_employee")
+            if "original_data" in st.session_state:
+                st.session_state.pop("original_data")
 
     file_type_choice = st.selectbox(
         "Select the type of file you want to upload",
@@ -67,6 +69,9 @@ def main():
                 st.session_state["edited_data"] = work_history_asked
                 st.session_state["pay_period_from"] = first_date
                 st.session_state["pay_period_to"] = last_date
+                # Reset original data for new employee
+                if "original_data" in st.session_state:
+                    st.session_state.pop("original_data")
             else:
                 reset_file()
                 st.warning("No temp work history found for the selected employee.")
@@ -76,9 +81,23 @@ def main():
             employee_id, full_name = get_employee_id(selected_username)
             work_history_asked, first_date, last_date = fetch_employee_temp_work_history(employee_id)
             if work_history_asked.empty == False:
+                # Load holiday events from the JSON file.
+                calendar_events_for_bulk = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
+
+                # Convert the keys from string to date objects.
+                calendar_events_date_for_bulk = {
+                    pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                    for date_str, event in calendar_events_for_bulk.items()
+                }
+
+                # Map the holiday events onto the DataFrame using the converted keys.
+                work_history_asked['Holiday'] = work_history_asked['Date'].map(calendar_events_date_for_bulk)
                 st.session_state["edited_data"] = work_history_asked
                 st.session_state["pay_period_from"] = first_date
                 st.session_state["pay_period_to"] = last_date
+                # Reset original data for new employee
+                if "original_data" in st.session_state:
+                    st.session_state.pop("original_data")
             else:
                 reset_file()
                 st.warning("No temp work history found for the selected employee.")
@@ -160,38 +179,7 @@ def main():
         break_hours = "00:30"
         multiplication_input = 1.0
     
-        # --- Second Read: Extract the Main Data ---
-        file_buffer.seek(0)
-        data_df = pd.read_csv(file_buffer, skiprows=3, skipfooter=1, engine='python')
-        new_cols = list(data_df.columns)
-        new_cols[0] = "Day"
-        new_cols[1] = "Date"
-        data_df.columns = new_cols
-        data_df['Date'] = pd.to_datetime(data_df['Date'], format="%Y%m%d", errors="coerce").dt.date
-        
-        # Clean up the Note column to handle nan and None properly
-        data_df[' Note'] = data_df[' Note'].apply(
-            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
-        )
-        
-        # Clean up IN and OUT columns as well
-        data_df['IN'] = data_df['IN'].apply(
-            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
-        )
-        data_df['OUT'] = data_df['OUT'].apply(
-            lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
-        )
-        
-        data_df['Break'] = None
-        data_df['Standard Time'] = decimal_hours_to_hhmmss(standard_work_hours)
-        data_df['Difference'] = None
-        data_df['Difference (Decimal)'] = None
-        data_df['Multiplication'] = multiplication_input
-        data_df['Hours Overtime Left'] = None 
-        data_df['Holiday'] = None
-        data_df['Holiday Hours'] = None
-
-        # Load holiday events from the JSON file.
+        # Load holiday events from the JSON file (needed for both CSV and bulk timecard)
         calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
 
         # Convert the keys from string to date objects.
@@ -199,40 +187,93 @@ def main():
             pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
             for date_str, event in calendar_events.items()
         }
+    
+        # --- Second Read: Extract the Main Data ---
+        if uploaded_file:
+            # Only process CSV data - bulk timecard data is already processed
+            file_buffer.seek(0)
+            data_df = pd.read_csv(file_buffer, skiprows=3, skipfooter=1, engine='python')
+            new_cols = list(data_df.columns)
+            new_cols[0] = "Day"
+            new_cols[1] = "Date"
+            data_df.columns = new_cols
+            data_df['Date'] = pd.to_datetime(data_df['Date'], format="%Y%m%d", errors="coerce").dt.date
+            
+            # Clean up the Note column to handle nan and None properly
+            # Determine the correct Note column name for data cleaning
+            note_column_for_cleaning = None
+            if " Note" in data_df.columns:
+                note_column_for_cleaning = " Note"
+            elif "Note" in data_df.columns:
+                note_column_for_cleaning = "Note"
+            
+            if note_column_for_cleaning:
+                data_df[note_column_for_cleaning] = data_df[note_column_for_cleaning].apply(
+                    lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+                )
+            
+            # Clean up IN and OUT columns as well
+            data_df['IN'] = data_df['IN'].apply(
+                lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+            )
+            data_df['OUT'] = data_df['OUT'].apply(
+                lambda x: None if pd.isna(x) or str(x).strip() == "" or str(x).lower() in ["nan", "none", "null"] else str(x).strip()
+            )
+            
+            data_df['Break'] = None
+            data_df['Standard Time'] = decimal_hours_to_hhmmss(standard_work_hours)
+            data_df['Difference'] = None
+            data_df['Difference (Decimal)'] = None
+            data_df['Multiplication'] = multiplication_input
+            data_df['Hours Overtime Left'] = None 
+            data_df['Holiday'] = None
+            data_df['Holiday Hours'] = None
+            data_df['manual_modifications'] = None  # Track manual modifications
 
-        # Map the holiday events onto the DataFrame using the converted keys.
-        data_df['Holiday'] = data_df['Date'].map(calendar_events_date)
+            # Map the holiday events onto the DataFrame using the converted keys.
+            data_df['Holiday'] = data_df['Date'].map(calendar_events_date)
 
-        # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
-        data_df['Multiplication'] = data_df.apply(
-            lambda row: 2.0 if (
-                (row['Date'] in calendar_events_date and row['Date'].weekday() != 5)  # Holiday but not Saturday
-            ) else multiplication_input, 
-            axis=1
-        )
+            # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
+            data_df['Multiplication'] = data_df.apply(
+                lambda row: 2.0 if (
+                    (row['Date'] in calendar_events_date and row['Date'].weekday() != 5)  # Holiday but not Saturday
+                ) else multiplication_input, 
+                axis=1
+            )
 
-        # Compute work duration (Daily Total) and adjust Work Time and Break.
-        data_df[" Daily Total"] = data_df.apply(
-            lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
-        )
-        data_df["Work Time"], data_df["Break"] = zip(*data_df.apply(
-            lambda row: adjust_work_time_and_break(row[" Daily Total"], row.get("Break"), break_rule_hours, break_hours), axis=1
-        ))
+            # Compute work duration (Daily Total) and adjust Work Time and Break.
+            data_df[" Daily Total"] = data_df.apply(
+                lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
+            )
+            data_df["Work Time"], data_df["Break"] = zip(*data_df.apply(
+                lambda row: adjust_work_time_and_break(row[" Daily Total"], row.get("Break"), break_rule_hours, break_hours), axis=1
+            ))
+        else:
+            # For bulk timecard data, use the already processed data
+            data_df = st.session_state["edited_data"].copy()
+            # Add manual_modifications column if it doesn't exist
+            if 'manual_modifications' not in data_df.columns:
+                data_df['manual_modifications'] = None
     
         if "edited_data" not in st.session_state:
             st.session_state["edited_data"] = data_df
             # Store original data for comparison
             st.session_state["original_data"] = data_df.copy()
+        elif "original_data" not in st.session_state:
+            # For bulk timecard data, ensure original data is stored for comparison
+            st.session_state["original_data"] = st.session_state["edited_data"].copy()
     
+        # Use the appropriate data source for the editor
+        data_to_edit = st.session_state["edited_data"]
         edited_data = st.data_editor(
-            data=st.session_state["edited_data"],
+            data=data_to_edit,
             num_rows="dynamic",
             key="edited_data_editor"
         )       
 
     
         # Compare current data with original data to find differences
-        current_data = st.session_state["edited_data"]
+        current_data = edited_data  # Use the data from the editor
         original_data = st.session_state.get("original_data", current_data)
         
         # Create a DataFrame to track which cells have changed
@@ -244,21 +285,48 @@ def main():
                 return ""
             return str(val).strip()
         
+        # Determine the correct Note column name
+        note_column = None
+        if " Note" in current_data.columns:
+            note_column = " Note"
+        elif "Note" in current_data.columns:
+            note_column = "Note"
+        
         # Compare IN, OUT, and Note columns
-        for col in ["IN", "OUT", " Note"]:
+        columns_to_compare = ["IN", "OUT"]
+        if note_column:
+            columns_to_compare.append(note_column)
+            
+        for col in columns_to_compare:
             if col in current_data.columns and col in original_data.columns:
                 # Normalize both current and original values before comparison
                 current_normalized = current_data[col].apply(normalize_value)
                 original_normalized = original_data[col].apply(normalize_value)
                 changed_cells[col] = current_normalized != original_normalized
         
+        # Update manual_modifications field based on changes
+        if not changed_cells.empty:
+            for idx in current_data.index:
+                modified_columns = []
+                for col in columns_to_compare:
+                    if col in changed_cells.columns and changed_cells.loc[idx, col]:
+                        modified_columns.append(col)
+                
+                if modified_columns:
+                    current_data.loc[idx, 'manual_modifications'] = ", ".join(modified_columns)
+                else:
+                    current_data.loc[idx, 'manual_modifications'] = None
+        
+        # Update session state with the edited data
+        st.session_state["edited_data"] = current_data
+
         # Apply styling to highlight changed cells
         if not changed_cells.empty:
             # Create a styled DataFrame for display
-            styled_data = st.session_state["edited_data"].copy()
+            styled_data = edited_data.copy()  # Use the data from the editor
             
             # Add a visual indicator for changed cells
-            for col in ["IN", "OUT", " Note"]:
+            for col in columns_to_compare:
                 if col in changed_cells.columns:
                     changed_mask = changed_cells[col]
                     
@@ -315,6 +383,10 @@ def main():
                     axis=1
                 )
 
+                # Preserve manual_modifications field
+                if 'manual_modifications' in st.session_state["edited_data"].columns:
+                    updated_df['manual_modifications'] = st.session_state["edited_data"]['manual_modifications']
+
                 st.session_state["edited_data"] = updated_df
                 st.rerun()
 
@@ -336,6 +408,10 @@ def main():
                 
                 # Compute running holiday hours using the extracted holiday dates.
                 df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
+                
+                # Preserve manual_modifications field
+                if 'manual_modifications' in st.session_state["edited_data"].columns:
+                    df['manual_modifications'] = st.session_state["edited_data"]['manual_modifications']
                 
                 st.session_state["edited_data"] = df
                 st.success("Holiday hours calculated and updated!")
