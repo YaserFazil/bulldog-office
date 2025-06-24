@@ -317,9 +317,6 @@ def main():
                 else:
                     current_data.loc[idx, 'manual_modifications'] = None
         
-        # Update session state with the edited data
-        st.session_state["edited_data"] = current_data
-
         # Apply styling to highlight changed cells
         if not changed_cells.empty:
             # Create a styled DataFrame for display
@@ -353,6 +350,7 @@ def main():
         col10, col11, col12 = st.columns(3)
         with col10:
             if st.button("Calculate Work Duration", use_container_width=True):
+                # Use the data from the editor, not session state
                 updated_df = safe_convert_to_df(edited_data).copy()
                 updated_df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
                 
@@ -383,16 +381,18 @@ def main():
                     axis=1
                 )
 
-                # Preserve manual_modifications field
-                if 'manual_modifications' in st.session_state["edited_data"].columns:
-                    updated_df['manual_modifications'] = st.session_state["edited_data"]['manual_modifications']
+                # Preserve manual_modifications field from the editor data
+                if 'manual_modifications' in edited_data.columns:
+                    updated_df['manual_modifications'] = edited_data['manual_modifications']
 
+                # Now update session state
                 st.session_state["edited_data"] = updated_df
                 st.rerun()
 
         with col11:
             # --- New: Calculate Holiday Hours Running Balance ---
             if st.button("Calculate Holiday", use_container_width=True):
+                # Use the data from the editor, not session state
                 df = safe_convert_to_df(edited_data).copy()
                 
                 # Helper function to ensure the 'Holiday' column has a valid, non-empty value.
@@ -409,16 +409,18 @@ def main():
                 # Compute running holiday hours using the extracted holiday dates.
                 df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
                 
-                # Preserve manual_modifications field
-                if 'manual_modifications' in st.session_state["edited_data"].columns:
-                    df['manual_modifications'] = st.session_state["edited_data"]['manual_modifications']
+                # Preserve manual_modifications field from the editor data
+                if 'manual_modifications' in edited_data.columns:
+                    df['manual_modifications'] = edited_data['manual_modifications']
                 
+                # Now update session state
                 st.session_state["edited_data"] = df
                 st.success("Holiday hours calculated and updated!")
                 st.rerun()
         
         with col12:
             if st.button("Save Data to DB", use_container_width=True):
+                # Use the data from the editor, not session state
                 updated_df = safe_convert_to_df(edited_data).copy()
                 work_history_created = upsert_employee_work_history(updated_df, employee_id)
                 if work_history_created["success"] == True:

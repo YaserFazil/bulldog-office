@@ -204,8 +204,9 @@ def main_work():
                     else:
                         current_data.loc[idx, 'manual_modifications'] = None
             
-            # Update session state with the edited data
-            st.session_state["edited_work_history_data"] = current_data
+            # Don't update session state here - it causes the editor to reset
+            # Only update session state when buttons are clicked or when explicitly needed
+            # st.session_state["edited_work_history_data"] = current_data
             
             # Apply styling to highlight changed cells
             if not changed_cells.empty and changed_cells.any().any():
@@ -269,6 +270,7 @@ def main_work():
             
             with col1:
                 if st.button("Calculate Work Duration", use_container_width=True):
+                    # Use the data from the editor, not session state
                     updated_df = safe_convert_to_df(edited_work_history_data).copy()
                     
                     # Set multiplication to 2 for Sundays and holidays (but not Saturdays)
@@ -302,16 +304,18 @@ def main_work():
                         axis=1
                     )
                     
-                    # Preserve manual_modifications field
-                    if 'manual_modifications' in st.session_state["edited_work_history_data"].columns:
-                        updated_df['manual_modifications'] = st.session_state["edited_work_history_data"]['manual_modifications']
+                    # Preserve manual_modifications field from the editor data
+                    if 'manual_modifications' in edited_work_history_data.columns:
+                        updated_df['manual_modifications'] = edited_work_history_data['manual_modifications']
                     
+                    # Now update session state
                     st.session_state["edited_work_history_data"] = updated_df
                     st.rerun()
             
             with col2:
                 # --- New: Calculate Holiday Hours Running Balance ---
                 if st.button("Calculate Holiday", use_container_width=True):
+                    # Use the data from the editor, not session state
                     # Load holiday events from the JSON file.
                     calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
 
@@ -336,10 +340,11 @@ def main_work():
                     # Compute running holiday hours using the extracted holiday dates.
                     df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
                     
-                    # Preserve manual_modifications field
-                    if 'manual_modifications' in st.session_state["edited_work_history_data"].columns:
-                        df['manual_modifications'] = st.session_state["edited_work_history_data"]['manual_modifications']
+                    # Preserve manual_modifications field from the editor data
+                    if 'manual_modifications' in edited_work_history_data.columns:
+                        df['manual_modifications'] = edited_work_history_data['manual_modifications']
                     
+                    # Now update session state
                     st.session_state["edited_work_history_data"] = df
                     st.success("Holiday hours calculated and updated!")
                     st.rerun()
@@ -347,7 +352,7 @@ def main_work():
             with col3:
                 # Implement actual save logic here
                 if st.button("Save Changes", use_container_width=True):
-                    # employee_id, full_name = get_employee_id(selected_username)
+                    # Use the data from the editor, not session state
                     updated_df = safe_convert_to_df(edited_work_history_data).copy()
                     work_history_created = upsert_employee_work_history(updated_df, employee_id)
                     if work_history_created["success"] == True:
