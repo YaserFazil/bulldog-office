@@ -52,6 +52,11 @@ def main():
             "title": "🏖️ Absence Tracking Guide",
             "description": "Track and manage employee absences and time off",
             "icon": "🏖️"
+        },
+        "ANALYTICS_DASHBOARD_GUIDE.md": {
+            "title": "📊 Analytics Dashboard Guide",
+            "description": "Comprehensive analytics and business intelligence insights",
+            "icon": "📊"
         }
     }
     
