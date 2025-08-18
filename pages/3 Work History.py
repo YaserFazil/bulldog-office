@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import get_employees, get_employee_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events, send_the_pdf_created_in_history_page_to_email
+from utils import get_employees, get_employee_id, fetch_employee_work_history, safe_convert_to_df, upsert_employee_work_history, hhmm_to_decimal, compute_work_duration, adjust_work_time_and_break, compute_time_difference, compute_running_holiday_hours, decimal_hours_to_hhmmss, load_calendar_events, send_the_pdf_created_in_history_page_to_email, fill_missing_days_in_work_history, calculate_absence_hours
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -48,9 +48,62 @@ def main_work():
             pay_period_to_selected = st.date_input("**Pay Period To:**", value=default_pay_period_to, min_value=pay_period_from_selected)
         with col13:
             period_loaded = st.button("Load selected period")
+        
+        # Add Fill Missing Days functionality
+        st.markdown("---")
+        st.markdown("### 📅 Absence Tracking Tools")
+        st.info("💡 **Tip**: Use these tools to add missing days and track employee absences like vacation, sick leave, etc.")
+        
+        col_fill1, col_fill2, col_fill3, col_debug = st.columns(4)
+        with col_fill1:
+            fill_missing_days = st.button("🔧 Fill Missing Days", help="Add placeholder entries for days without work records to enable absence tracking")
+        with col_fill2:
+            absence_type = st.selectbox(
+                "Absence Type for Empty Days",
+                ["", "vacation", "sick", "personal", "unpaid", "holiday", "other"],
+                help="Select the type of absence to apply to empty days"
+            )
+        with col_fill3:
+            apply_absence = st.button("✅ Apply Absence Type", help="Apply the selected absence type to all empty days")
+        with col_debug:
+            debug_info = st.button("🐛 Debug Info", help="Show debug information to help troubleshoot issues")
+        
+        # Debug information
+        if debug_info:
+            st.markdown("### 🐛 Debug Information")
+            if "edited_work_history_data" in st.session_state:
+                data = st.session_state["edited_work_history_data"]
+                st.write(f"**Data shape:** {data.shape}")
+                st.write(f"**Columns:** {list(data.columns)}")
+                if not data.empty and 'Date' in data.columns:
+                    st.write(f"**Date range:** {data['Date'].min()} to {data['Date'].max()}")
+                    st.write(f"**Total days:** {len(data)}")
+                else:
+                    st.write("**No date data available**")
+            else:
+                st.write("**No work history data in session**")
+        
+        # Absence type explanations
+        if absence_type:
+            absence_explanations = {
+                "vacation": "🏖️ **Vacation**: Paid time off, counts toward holiday hours",
+                "sick": "🏥 **Sick Leave**: Illness-related absence, may have different pay rules",
+                "personal": "👤 **Personal Leave**: Personal time off, may be paid or unpaid",
+                "unpaid": "❌ **Unpaid Leave**: No pay, no hours counted",
+                "holiday": "🎉 **Holiday**: Company or public holiday",
+                "other": "📝 **Other**: Miscellaneous absence type"
+            }
+            if absence_type in absence_explanations:
+                st.info(absence_explanations[absence_type])
+        
         if period_loaded:
             # # Fetch filtered data based on employee selection
-            work_history, previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(employee_id, pay_period_from_selected, pay_period_to_selected)
+            work_history, previous_hours_overtime, previous_holiday_hours = fetch_employee_work_history(
+                employee_id, 
+                pay_period_from_selected, 
+                pay_period_to_selected,
+                fill_missing_days=True  # Automatically fill missing days when loading a period
+            )
             latest_holiday_hours = previous_holiday_hours if previous_holiday_hours else work_history["Holiday Hours"].iloc[0] if "Holiday Hours" in work_history and work_history["Holiday Hours"].iloc[0] else "00:00"
             latest_hours_overtime_left = (
                 previous_hours_overtime
@@ -63,10 +116,107 @@ def main_work():
             st.session_state["latest_holiday_hours_left"] = latest_holiday_hours
             st.session_state["latest_hours_overtime_left"] = latest_hours_overtime_left
             st.session_state["edited_work_history_data"] = work_history
+            # Store the selected date range for use by other functions
+            st.session_state["selected_start_date"] = pay_period_from_selected
+            st.session_state["selected_end_date"] = pay_period_to_selected
             # Reset original data for new period
             if "original_work_history_data" in st.session_state:
                 st.session_state.pop("original_work_history_data")
             st.rerun()
+        
+        # Handle Fill Missing Days functionality
+        if fill_missing_days and "edited_work_history_data" in st.session_state:
+            try:
+                with st.spinner("Filling missing days..."):
+                    current_data = st.session_state["edited_work_history_data"]
+                    
+                    # Debug: Show current data info
+                    st.write(f"Current data shape: {current_data.shape}")
+                    st.write(f"Current data columns: {list(current_data.columns)}")
+                    
+                    # Use the selected date range from session state
+                    if "selected_start_date" in st.session_state and "selected_end_date" in st.session_state:
+                        start_date = st.session_state["selected_start_date"]
+                        end_date = st.session_state["selected_end_date"]
+                        st.write(f"Using selected date range: {start_date} to {end_date}")
+                    elif not current_data.empty and 'Date' in current_data.columns:
+                        start_date = current_data['Date'].min()
+                        end_date = current_data['Date'].max()
+                        st.write(f"Using existing data range: {start_date} to {end_date}")
+                    else:
+                        st.error("No date range available. Please select a date range first.")
+                        return
+                    
+                    st.info(f"Filling missing days from {start_date} to {end_date}")
+                    
+                    # Test the function with the full selected date range
+                    test_result = fill_missing_days_in_work_history(
+                        current_data, 
+                        start_date=start_date, 
+                        end_date=end_date,
+                        employee_id=employee_id
+                    )
+                    
+                    st.write(f"Test result shape: {test_result.shape if test_result is not None else 'None'}")
+                    if test_result is not None:
+                        st.write(f"Test result columns: {list(test_result.columns)}")
+                        st.write(f"Holiday column exists: {'Holiday' in test_result.columns}")
+                    
+                    if test_result is not None and not test_result.empty:
+                        st.session_state["edited_work_history_data"] = test_result
+                        added_days = len(test_result) - len(current_data)
+                        st.success(f"✅ Added {added_days} missing days to the work history!")
+                        st.rerun()
+                    else:
+                        st.error("Failed to fill missing days. Please try again.")
+            except Exception as e:
+                st.error(f"Error filling missing days: {str(e)}")
+                import traceback
+                st.error(f"Full traceback: {traceback.format_exc()}")
+                st.info("Please ensure you have loaded a work history period first.")
+        
+        # Handle Apply Absence Type functionality
+        if apply_absence and absence_type and "edited_work_history_data" in st.session_state:
+            with st.spinner("Applying absence type..."):
+                current_data = st.session_state["edited_work_history_data"].copy()
+                standard_hours = standard_work_hours_str if 'standard_work_hours_str' in locals() else "08:00"
+                
+                # Apply absence type only to new records (not existing DB records)
+                modified_count = 0
+                for idx, row in current_data.iterrows():
+                    # Only modify if it's a new record (not from DB) and has no IN/OUT times
+                    is_new = row.get('is_new_record', False)
+                    has_no_times = pd.isna(row['IN']) or row['IN'] is None or str(row['IN']).strip() == ''
+                    
+                    if is_new and has_no_times:
+                        work_time, note = calculate_absence_hours(absence_type, standard_hours)
+                        current_data.at[idx, 'Work Time'] = work_time
+                        current_data.at[idx, ' Note'] = note
+                        current_data.at[idx, 'Holiday'] = absence_type
+                        
+                        # Recalculate Difference and Difference (Decimal) based on new work time
+                        standard_time = str(current_data.at[idx, 'Standard Time'])
+                        
+                        try:
+                            diff_str = compute_time_difference(work_time, standard_time, absence_type, default=True)
+                            diff_decimal = compute_time_difference(work_time, standard_time, absence_type, default=False)
+                            
+                            if diff_str is not None:
+                                current_data.at[idx, 'Difference'] = diff_str
+                            if diff_decimal is not None:
+                                current_data.at[idx, 'Difference (Decimal)'] = diff_decimal
+                        except Exception:
+                            current_data.at[idx, 'Difference'] = '00:00'
+                            current_data.at[idx, 'Difference (Decimal)'] = 0.0
+                        
+                        modified_count += 1
+                
+                st.session_state["edited_work_history_data"] = current_data
+                if modified_count > 0:
+                    st.success(f"✅ Applied '{absence_type}' absence type to {modified_count} new days!")
+                else:
+                    st.info(f"ℹ️ No new days found to apply '{absence_type}' absence type. Existing database records were not modified.")
+                st.rerun()
         if "edited_work_history_data" in st.session_state and not st.session_state.get("edited_work_history_data").empty:
             employee_name = st.text_input("**Employee Name:**", value=employee_name, disabled=True)
             holiday_hours_col, hours_overtime_col, col4 = st.columns(3)
@@ -106,6 +256,10 @@ def main_work():
                     required=True,
                     default=standard_work_hours_str
                 ),
+                "Holiday": st.column_config.TextColumn(
+                    "Holiday",
+                    help="Holiday/absence type for this day (auto-filled from calendar or manually entered)"
+                ),
             }
             edited_work_history_data = st.data_editor(
                 data=st.session_state["edited_work_history_data"],
@@ -130,9 +284,47 @@ def main_work():
                     "employee_id",
                     "_id"
                 ],
-                disabled=["_id", "employee_id"],
+                disabled=["_id", "employee_id", "is_new_record"],
+                hide_index=True,
+                use_container_width=True,
                 key="edited_work_history_data_editor"
             )
+            
+            # Display absence summary
+            if not edited_work_history_data.empty:
+                st.markdown("---")
+                st.markdown("### 📊 Absence Summary")
+                
+                # Count absence types
+                absence_counts = edited_work_history_data['Holiday'].value_counts()
+                total_days = len(edited_work_history_data)
+                work_days = len(edited_work_history_data[edited_work_history_data['IN'].notna() & (edited_work_history_data['IN'] != '')])
+                absence_days = total_days - work_days
+                
+                col_sum1, col_sum2, col_sum3 = st.columns(3)
+                with col_sum1:
+                    st.metric("Total Days", total_days)
+                with col_sum2:
+                    st.metric("Work Days", work_days)
+                with col_sum3:
+                    st.metric("Absence Days", absence_days)
+                
+                # Show absence breakdown
+                if not absence_counts.empty:
+                    st.markdown("**Absence Breakdown:**")
+                    for absence_type, count in absence_counts.items():
+                        if absence_type and str(absence_type).strip() != '':
+                            absence_icons = {
+                                "vacation": "🏖️",
+                                "sick": "🏥", 
+                                "personal": "👤",
+                                "unpaid": "❌",
+                                "holiday": "🎉",
+                                "weekend": "📅",
+                                "other": "📝"
+                            }
+                            icon = absence_icons.get(absence_type, "📋")
+                            st.write(f"{icon} {absence_type.title()}: {count} days")
             
             # Process yellow indicators based on manual_modifications field
             current_data = edited_work_history_data
@@ -307,39 +499,115 @@ def main_work():
             with col2:
                 # --- New: Calculate Holiday Hours Running Balance ---
                 if st.button("Calculate Holiday", use_container_width=True):
-                    # Use the data from the editor, not session state
-                    # Load holiday events from the JSON file.
-                    calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
+                    try:
+                        # Use the data from the editor, not session state
+                        # Load holiday events from the JSON file.
+                        calendar_events = load_calendar_events()  # keys are like "2025-01-04", values like "Weekend/Holiday"
 
-                    # Convert the keys from string to date objects.
-                    calendar_events_date = {
-                        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
-                        for date_str, event in calendar_events.items()
-                    }
-                    df = safe_convert_to_df(edited_work_history_data).copy()
-                    
-                    # Helper function to ensure the 'Holiday' column has a valid, non-empty value.
-                    def is_valid_holiday(value):
-                        return pd.notnull(value) and str(value).strip() != ''
-                    
-                    valid_holiday_mask = df['Holiday'].apply(is_valid_holiday)
-                    
-                    # Convert the date objects to strings in "YYYY-MM-DD" format.
-                    holiday_event_dates = set(
-                        df.loc[valid_holiday_mask, 'Date'].apply(lambda d: d.strftime('%Y-%m-%d'))
-                    )
-                    
-                    # Compute running holiday hours using the extracted holiday dates.
-                    df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
-                    
-                    # Preserve manual_modifications field from the editor data
-                    if 'manual_modifications' in edited_work_history_data.columns:
-                        df['manual_modifications'] = edited_work_history_data['manual_modifications']
-                    
-                    # Now update session state
-                    st.session_state["edited_work_history_data"] = df
-                    st.success("Holiday hours calculated and updated!")
-                    st.rerun()
+                        # Convert the keys from string to date objects.
+                        calendar_events_date = {
+                            pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                            for date_str, event in calendar_events.items()
+                        }
+                        df = safe_convert_to_df(edited_work_history_data).copy()
+                        
+                        # Clean the data for calculation - ensure all required fields exist and have proper values
+                        required_fields = ['Work Time', 'Standard Time', 'Difference (Decimal)', 'Multiplication', 'Difference']
+                        for field in required_fields:
+                            if field not in df.columns:
+                                if field == 'Work Time':
+                                    df[field] = '00:00'
+                                elif field == 'Standard Time':
+                                    df[field] = '08:00'
+                                elif field == 'Difference (Decimal)':
+                                    df[field] = 0.0
+                                elif field == 'Multiplication':
+                                    df[field] = 1.0
+                                elif field == 'Difference':
+                                    df[field] = '00:00'
+                        
+                        # Fill missing values for calculation
+                        df['Work Time'] = df['Work Time'].fillna('00:00')
+                        df['Standard Time'] = df['Standard Time'].fillna('08:00')
+                        df['Difference (Decimal)'] = df['Difference (Decimal)'].fillna(0.0)
+                        df['Multiplication'] = df['Multiplication'].fillna(1.0)
+                        df['Difference'] = df['Difference'].fillna('00:00')
+                        
+                        # Recalculate time differences and decimal values for new records
+                        for idx, row in df.iterrows():
+                            work_time = str(row['Work Time'])
+                            standard_time = str(row['Standard Time'])
+                            holiday = row.get('Holiday', '')
+                            
+                            # Only recalculate for records that need it (empty or invalid values)
+                            if (pd.isna(row.get('Difference (Decimal)')) or 
+                                row.get('Difference (Decimal)') == 0.0 or 
+                                pd.isna(row.get('Difference')) or 
+                                str(row.get('Difference', '')).strip() == ''):
+                                
+                                # Calculate time difference
+                                diff_str = compute_time_difference(work_time, standard_time, holiday, default=True)
+                                diff_decimal = compute_time_difference(work_time, standard_time, holiday, default=False)
+                                
+                                if diff_str is not None:
+                                    df.at[idx, 'Difference'] = diff_str
+                                if diff_decimal is not None:
+                                    df.at[idx, 'Difference (Decimal)'] = diff_decimal
+                        
+                        st.write(f"Debug: Data shape before calculation: {df.shape}")
+                        st.write(f"Debug: Sample Work Time values: {df['Work Time'].head(3).tolist()}")
+                        st.write(f"Debug: Sample Difference (Decimal) values: {df['Difference (Decimal)'].head(3).tolist()}")
+                        
+                        # Helper function to ensure the 'Holiday' column has a valid, non-empty value.
+                        def is_valid_holiday(value):
+                            return pd.notnull(value) and str(value).strip() != ''
+                        
+                        valid_holiday_mask = df['Holiday'].apply(is_valid_holiday)
+                        
+                        # Convert the date objects to strings in "YYYY-MM-DD" format.
+                        holiday_event_dates = set(
+                            df.loc[valid_holiday_mask, 'Date'].apply(lambda d: d.strftime('%Y-%m-%d'))
+                        )
+                        
+                        st.write(f"Debug: Found {len(holiday_event_dates)} holiday dates for calculation")
+                        st.write(f"Debug: Holiday event dates: {list(holiday_event_dates)[:5]}")  # Show first 5
+                        st.write(f"Debug: Starting holiday hours: {holiday_hours}")
+                        st.write(f"Debug: Starting overtime: {hours_overtime_str}")
+                        
+                        # Compute running holiday hours using the extracted holiday dates.
+                        df_before_calc = df.copy()
+                        df = compute_running_holiday_hours(df, holiday_event_dates, calendar_events_date, holiday_hours, hours_overtime_str)
+                        
+                        # Debug: Check if calculation worked
+                        if 'Holiday Hours' in df.columns:
+                            st.write(f"Debug: Holiday Hours after calculation: {df['Holiday Hours'].head(3).tolist()}")
+                        if 'Hours Overtime Left' in df.columns:
+                            st.write(f"Debug: Hours Overtime Left after calculation: {df['Hours Overtime Left'].head(3).tolist()}")
+                        
+                        # Check if values actually changed
+                        if 'Holiday Hours' in df_before_calc.columns and 'Holiday Hours' in df.columns:
+                            changed = not df_before_calc['Holiday Hours'].equals(df['Holiday Hours'])
+                            st.write(f"Debug: Holiday Hours values changed: {changed}")
+                        if 'Hours Overtime Left' in df_before_calc.columns and 'Hours Overtime Left' in df.columns:
+                            changed = not df_before_calc['Hours Overtime Left'].equals(df['Hours Overtime Left'])
+                            st.write(f"Debug: Overtime values changed: {changed}")
+                        
+                        # Preserve manual_modifications field from the editor data
+                        if 'manual_modifications' in edited_work_history_data.columns:
+                            df['manual_modifications'] = edited_work_history_data['manual_modifications']
+                        
+                        # Preserve is_new_record field if it exists
+                        if 'is_new_record' in edited_work_history_data.columns:
+                            df['is_new_record'] = edited_work_history_data['is_new_record']
+                        
+                        # Now update session state
+                        st.session_state["edited_work_history_data"] = df
+                        st.success("Holiday hours calculated and updated!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error calculating holiday hours: {str(e)}")
+                        import traceback
+                        st.error(f"Full error: {traceback.format_exc()}")
             
             with col3:
                 # Implement actual save logic here

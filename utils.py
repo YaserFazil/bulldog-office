@@ -230,21 +230,24 @@ def compute_time_difference(work_time, standard_time, is_holiday=None, default=T
     Returns a string in "hh:mm" format, with a "-" sign if negative.
     If either input is missing or invalid, returns an empty string.
     """
+    # Check if is_holiday is actually a holiday (non-empty string or non-null)
+    has_holiday = is_holiday is not None and pd.notna(is_holiday) and str(is_holiday).strip() != ""
+    
     # Check for empty or None values.
     if not work_time or not standard_time:
-        if standard_time and not pd.notna(is_holiday):
+        if standard_time and not has_holiday:
             return "-" + standard_time if default else -hhmm_to_decimal(standard_time)
-        elif standard_time and pd.notna(is_holiday):
+        elif standard_time and has_holiday:
             return "00:00" if default else hhmm_to_decimal("00:00")
-        elif not standard_time and pd.notna(is_holiday):
+        elif not standard_time and has_holiday:
             return work_time if default else hhmm_to_decimal(work_time)
-        elif not work_time and pd.notna(is_holiday):
+        elif not work_time and has_holiday:
             return "00:00" if default else hhmm_to_decimal("00:00")
         else:
             return None
-    if pd.notna(is_holiday) and default is True:
+    if has_holiday and default is True:
         return work_time
-    elif pd.notna(is_holiday) and default is False:
+    elif has_holiday and default is False:
         return hhmm_to_decimal(work_time)
     try:
         work_hours, work_minutes = map(int, work_time.split(':'))
@@ -269,7 +272,7 @@ def compute_time_difference(work_time, standard_time, is_holiday=None, default=T
     else:
         return diff / 60 if not sign else -diff / 60
 
-def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
+def fetch_employee_work_history(employee_id, start_date=None, end_date=None, fill_missing_days=False):
     try:
         """Fetch work history for the selected employee within a date range, 
         also retrieves 'Hours Holiday' from the record before start_date if available."""
@@ -301,6 +304,16 @@ def fetch_employee_work_history(employee_id, start_date=None, end_date=None):
             work_history['Date'] = pd.to_datetime(work_history['Date']).dt.date
             work_history["IN"] = work_history["IN"].replace({np.nan: None}).astype("object").values
             work_history["OUT"] = work_history["OUT"].replace({np.nan: None}).astype("object").values
+            
+            # Fill missing days if requested and date range is specified
+            if fill_missing_days and start_date and end_date:
+                work_history = fill_missing_days_in_work_history(
+                    work_history, 
+                    start_date=start_date, 
+                    end_date=end_date,
+                    employee_id=employee_id
+                )
+            
             return work_history, previous_hours_overtime, previous_holiday_hours
         
         return pd.DataFrame(), previous_hours_overtime, previous_holiday_hours
@@ -402,4 +415,207 @@ def send_the_pdf_created_in_history_page_to_email(employee_id, pdf_buffer, file_
             st.warning("employee not found.")
     except Exception as e:
         st.error(f"Something went wrong while sending the PDF: {e}")
+
+
+def fill_missing_days_in_work_history(work_history_df, start_date=None, end_date=None, employee_id=None):
+    """
+    Fill missing days in work history with placeholder entries.
+    This allows users to add absence types (vacation, sick leave, etc.) for days without work records.
+    
+    Args:
+        work_history_df: DataFrame with existing work history
+        start_date: Start date for the range (if None, uses first work record)
+        end_date: End date for the range (if None, uses today or last work record)
+        employee_id: Employee ID for the records
+    
+    Returns:
+        DataFrame with filled missing days
+    """
+    try:
+        from datetime import date, timedelta
+        import calendar
+        
+        if work_history_df.empty:
+            st.warning("No work history data available to fill missing days.")
+            return work_history_df
+        
+        # Determine date range
+        if start_date is None:
+            if not work_history_df.empty and 'Date' in work_history_df.columns:
+                start_date = work_history_df['Date'].min()
+            else:
+                st.error("Cannot determine start date. Please load work history first.")
+                return work_history_df
+        
+        if end_date is None:
+            if not work_history_df.empty and 'Date' in work_history_df.columns:
+                end_date = max(work_history_df['Date'].max(), date.today())
+            else:
+                end_date = date.today()
+        
+        # Ensure dates are date objects
+        if isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date).date()
+        if isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date).date()
+        
+        # Create complete date range
+        date_range = []
+        current_date = start_date
+        while current_date <= end_date:
+            date_range.append(current_date)
+            current_date += timedelta(days=1)
+        
+        # Create a complete DataFrame with all dates
+        complete_df = pd.DataFrame({'Date': date_range})
+        
+        # Add day of week (abbreviated format: MON, TUE, WED, etc.)
+        complete_df['Day'] = complete_df['Date'].apply(lambda x: calendar.day_abbr[x.weekday()].upper())
+        
+        # Merge with existing work history
+        if not work_history_df.empty:
+            # Ensure Date column is datetime for merging
+            work_history_df_copy = work_history_df.copy()
+            work_history_df_copy['Date'] = pd.to_datetime(work_history_df_copy['Date'])
+            complete_df['Date'] = pd.to_datetime(complete_df['Date'])
+            
+            # Remove the Day column from work_history_df_copy to avoid conflicts
+            # We'll use the Day column from complete_df which has all days
+            if 'Day' in work_history_df_copy.columns:
+                work_history_df_copy = work_history_df_copy.drop('Day', axis=1)
+            
+            # Merge existing data with complete date range
+            merged_df = pd.merge(complete_df, work_history_df_copy, on='Date', how='left')
+            
+            # For any missing columns from the original data, add them with default values
+            for col in work_history_df_copy.columns:
+                if col not in merged_df.columns and col != 'Date':
+                    merged_df[col] = None
+        else:
+            merged_df = complete_df
+        
+        # Ensure Day column is properly filled for all rows
+        if 'Day' in merged_df.columns:
+            # Recalculate day names for all dates to ensure they're correct (abbreviated format)
+            merged_df['Day'] = merged_df['Date'].apply(lambda x: calendar.day_abbr[x.weekday()].upper())
+        else:
+            st.error("Day column is missing from merged data")
+        
+        # Fill missing values for required columns
+        if employee_id:
+            merged_df['employee_id'] = employee_id
+        
+        # Ensure all required columns exist
+        required_columns = ['IN', 'OUT', 'Work Time', ' Daily Total', ' Note', 'Break', 
+                           'Standard Time', 'Difference', 'Difference (Decimal)', 
+                           'Multiplication', 'Holiday', 'Holiday Hours', 'Hours Overtime Left']
+        
+        for col in required_columns:
+            if col not in merged_df.columns:
+                merged_df[col] = None
+        
+        # Add a marker to distinguish between existing DB records and new placeholder records
+        merged_df['is_new_record'] = merged_df['_id'].isna()
+        
+        # Apply calendar events (holidays/weekends) to the Holiday column
+        try:
+            calendar_events = load_calendar_events()
+            if calendar_events:
+                # Convert the keys from string to date objects
+                calendar_events_date = {
+                    pd.to_datetime(date_str, format="%Y-%m-%d").date(): event 
+                    for date_str, event in calendar_events.items()
+                }
+                
+                # Apply calendar events to all dates, but only for new records or if Holiday is empty
+                for idx, row in merged_df.iterrows():
+                    date_val = row['Date']
+                    if isinstance(date_val, str):
+                        date_val = pd.to_datetime(date_val).date()
+                    
+                    # Apply calendar event if:
+                    # 1. It's a new record, OR
+                    # 2. The Holiday field is empty/null for existing records
+                    is_new = row.get('is_new_record', False)
+                    holiday_empty = pd.isna(row.get('Holiday')) or str(row.get('Holiday', '')).strip() == ''
+                    
+                    if date_val in calendar_events_date and (is_new or holiday_empty):
+                        merged_df.at[idx, 'Holiday'] = calendar_events_date[date_val]
+        except Exception as e:
+            st.warning(f"Could not load calendar events: {e}")
+        
+        # Set default values for missing entries - use the same approach as the original code
+        merged_df['IN'] = merged_df['IN'].replace({np.nan: None}).astype("object").values
+        merged_df['OUT'] = merged_df['OUT'].replace({np.nan: None}).astype("object").values
+        merged_df['Work Time'] = merged_df['Work Time'].fillna('00:00')
+        merged_df[' Daily Total'] = merged_df[' Daily Total'].fillna('00:00')
+        merged_df[' Note'] = merged_df[' Note'].fillna('')
+        merged_df['Break'] = merged_df['Break'].fillna('00:00')
+        merged_df['Standard Time'] = merged_df['Standard Time'].fillna('08:00')
+        merged_df['Difference'] = merged_df['Difference'].fillna('00:00')
+        merged_df['Difference (Decimal)'] = merged_df['Difference (Decimal)'].fillna(0.0)
+        merged_df['Multiplication'] = merged_df['Multiplication'].fillna(1.0)
+        merged_df['Holiday'] = merged_df['Holiday'].fillna('')
+        merged_df['Holiday Hours'] = merged_df['Holiday Hours'].fillna('')
+        merged_df['Hours Overtime Left'] = merged_df['Hours Overtime Left'].fillna('')
+        
+        # Calculate Difference and Difference (Decimal) for all records (especially new ones)
+        for idx, row in merged_df.iterrows():
+            work_time = str(row['Work Time']) if pd.notna(row['Work Time']) else '00:00'
+            standard_time = str(row['Standard Time']) if pd.notna(row['Standard Time']) else '08:00'
+            holiday = row.get('Holiday', '')
+            
+            # Calculate time difference using the existing function
+            try:
+                diff_str = compute_time_difference(work_time, standard_time, holiday, default=True)
+                diff_decimal = compute_time_difference(work_time, standard_time, holiday, default=False)
+                
+                if diff_str is not None:
+                    merged_df.at[idx, 'Difference'] = diff_str
+                if diff_decimal is not None:
+                    merged_df.at[idx, 'Difference (Decimal)'] = diff_decimal
+            except Exception as e:
+                # If calculation fails, use defaults
+                merged_df.at[idx, 'Difference'] = '00:00'
+                merged_df.at[idx, 'Difference (Decimal)'] = 0.0
+        
+        # Convert Date back to date type
+        merged_df['Date'] = pd.to_datetime(merged_df['Date']).dt.date
+        
+        # Sort by date
+        merged_df = merged_df.sort_values('Date').reset_index(drop=True)
+        
+        return merged_df
+        
+    except Exception as e:
+        st.error(f"Error filling missing days: {str(e)}")
+        print(f"Error filling missing days: {str(e)}")
+
+        import traceback
+        st.error(f"Full error: {traceback.format_exc()}")
+        print(f"Full error: {traceback.format_exc()}")
+        return work_history_df
+
+def calculate_absence_hours(absence_type, standard_hours="08:00"):
+    """
+    Calculate hours for different absence types.
+    
+    Args:
+        absence_type: Type of absence (vacation, sick, personal, etc.)
+        standard_hours: Standard work hours per day
+    
+    Returns:
+        Tuple of (work_time, note) for the absence
+    """
+    absence_mappings = {
+        'vacation': (standard_hours, 'Vacation'),
+        'sick': (standard_hours, 'Sick Leave'),
+        'personal': (standard_hours, 'Personal Leave'),
+        'unpaid': ('00:00', 'Unpaid Leave'),
+        'holiday': (standard_hours, 'Holiday'),
+        'weekend': ('00:00', 'Weekend'),
+        'other': (standard_hours, 'Other Leave')
+    }
+    
+    return absence_mappings.get(absence_type.lower(), (standard_hours, 'Leave'))
 
