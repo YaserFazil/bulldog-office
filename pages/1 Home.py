@@ -602,17 +602,17 @@ def main():
         elements.append(Paragraph("WORK HOURS SUMMARY", header_style))
         elements.append(Spacer(1, 30))
         updated_df_pdf = safe_convert_to_df(edited_data).copy()
-        # Summary Table with modern styling
+        # Summary Table with modern styling and explanations
         summary_data = [
-            ["Metric", "Value"],
-            ["Employee", employee_name],
-            ["Pay Period", pay_period],
-            ["Hours worked", hours_worked],
-            ["Hours expected", hours_expected],
-            ["Overtime or Undertime Balance", updated_df_pdf["Hours Overtime Left"].iloc[-1]],
-            ["Remaining Holiday Hours", updated_df_pdf["Holiday Hours"].iloc[-1]],
-            ["Total Sick Days", updated_df_pdf["Holiday"].apply(lambda x: 1 if x == "sick" or x == "Sick" else 0).sum()],
-            ["Total Available Time Off", decimal_hours_to_hhmmss(hhmm_to_decimal(updated_df_pdf["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(updated_df_pdf["Hours Overtime Left"].iloc[-1]))]
+            ["Metric", "Value", "What This Means"],
+            ["Employee", employee_name, "Your name as recorded in the system"],
+            ["Pay Period", pay_period, "The date range this report covers"],
+            ["Hours worked", hours_worked, "Total hours you actually worked (sum of all 'Work Time' entries)"],
+            ["Hours expected", hours_expected, "Total hours you were expected to work (sum of all 'Standard Time' entries, excluding holidays)"],
+            ["Overtime or Undertime Balance", updated_df_pdf["Hours Overtime Left"].iloc[-1], "Your current overtime balance. Positive = overtime earned, Negative = undertime owed"],
+            ["Remaining Holiday Hours", updated_df_pdf["Holiday Hours"].iloc[-1], "Your remaining paid holiday hours that you can use"],
+            ["Total Sick Days", updated_df_pdf["Holiday"].apply(lambda x: 1 if x == "sick" or x == "Sick" else 0).sum(), "Number of days marked as sick leave in this period"],
+            ["Total Available Time Off", decimal_hours_to_hhmmss(hhmm_to_decimal(updated_df_pdf["Holiday Hours"].iloc[-1]) + hhmm_to_decimal(updated_df_pdf["Hours Overtime Left"].iloc[-1])), "Combined hours of holiday time + overtime that you can use for time off"]
         ]
 
         # Calculate Total Available Time Off in Days
@@ -621,9 +621,9 @@ def main():
         total_available_days = total_available_hours / standard_work_hours_per_day if standard_work_hours_per_day > 0 else 0
         
         # Add the days calculation to the summary
-        summary_data.append(["Total Available Time Off (Days)", f"{total_available_days:.1f} days"])
+        summary_data.append(["Total Available Time Off (Days)", f"{total_available_days:.1f} days", "Your total available time off converted to full work days (assuming 8-hour workday)"])
 
-        summary_table = Table(summary_data, colWidths=[180, 180])
+        summary_table = Table(summary_data, colWidths=[150, 150, 420])
         summary_table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#3498db")),
             ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -734,6 +734,186 @@ def main():
 
         data_table.setStyle(TableStyle(table_style))
         elements.append(data_table)
+        elements.append(PageBreak())
+
+        # -- Detailed Explanation Page --
+        elements.append(Paragraph("📋 COMPLETE REPORT EXPLANATION", header_style))
+        elements.append(Spacer(1, 20))
+
+        # Create explanation styles
+        explanation_style = ParagraphStyle(
+            'Explanation',
+            parent=styles['Normal'],
+            fontName='Helvetica',
+            fontSize=11,
+            textColor=colors.HexColor("#2c3e50"),
+            alignment=0,
+            spaceAfter=8,
+            leftIndent=0
+        )
+
+        section_style = ParagraphStyle(
+            'Section',
+            parent=styles['Heading2'],
+            fontName='Helvetica-Bold',
+            fontSize=14,
+            textColor=colors.HexColor("#2c3e50"),
+            alignment=0,
+            spaceAfter=10,
+            spaceBefore=15
+        )
+
+        # Page 1: Summary Metrics Explanation
+        elements.append(Paragraph("📊 SUMMARY METRICS EXPLANATION", section_style))
+        
+        summary_explanations = [
+            "🏢 <b>Employee & Pay Period:</b> Basic identification information showing your name and the time period covered by this report.",
+            "",
+            "⏰ <b>Hours Worked:</b> The total number of hours you actually worked during this period. This is calculated by adding up all your 'Work Time' entries from each day.",
+            "",
+            "📅 <b>Hours Expected:</b> The total number of hours you were supposed to work during this period. This is calculated by adding up all your 'Standard Time' entries (usually 8 hours per day), excluding holidays and weekends.",
+            "",
+            "💰 <b>Overtime or Undertime Balance:</b> This shows your current overtime balance. A positive number means you've worked extra hours that you can use as time off. A negative number means you owe hours to the company.",
+            "",
+            "🏖️ <b>Remaining Holiday Hours:</b> Your remaining paid holiday hours that you can use for vacation or other time off.",
+            "",
+            "🏥 <b>Total Sick Days:</b> The number of days in this period that were marked as sick leave.",
+            "",
+            "📈 <b>Total Available Time Off:</b> The combined total of your holiday hours plus overtime balance - this is the total time you can take off.",
+            "",
+            "📊 <b>Total Available Time Off (Days):</b> Your available time off converted to full work days (assuming an 8-hour workday)."
+        ]
+        
+        for explanation in summary_explanations:
+            if explanation.strip():
+                elements.append(Paragraph(explanation, explanation_style))
+            else:
+                elements.append(Spacer(1, 5))
+
+        elements.append(Spacer(1, 15))
+
+        # Page 2: Detailed Work Log Explanation
+        elements.append(Paragraph("📋 DETAILED WORK LOG EXPLANATION", section_style))
+        
+        work_log_explanations = [
+            "📅 <b>Date:</b> The specific date of the work entry.",
+            "",
+            "⏰ <b>Daily Total:</b> The total time you were present at work (from check-in to check-out).",
+            "",
+            "☕ <b>Break:</b> The total break time taken during your work day.",
+            "",
+            "📆 <b>Day:</b> The day of the week (MON, TUE, WED, etc.).",
+            "",
+            "🎉 <b>Holiday:</b> Any holiday or special event on this date (Weekend, Holiday, Vacation, Sick, etc.).",
+            "",
+            "🏖️ <b>Holiday Hours:</b> Your running balance of remaining holiday hours after this date.",
+            "",
+            "💰 <b>Hours Overtime Left:</b> Your running balance of overtime hours after this date.",
+            "",
+            "🕐 <b>IN:</b> Your check-in time for the day.",
+            "",
+            "🕕 <b>OUT:</b> Your check-out time for the day.",
+            "",
+            "⏱️ <b>Standard Time:</b> The number of hours you were expected to work on this day (usually 8 hours).",
+            "",
+            "📊 <b>Multiplication:</b> Any multiplier applied to your hours (e.g., 2x for holiday work).",
+            "",
+            "💼 <b>Work Time:</b> The actual hours you worked after subtracting break time."
+        ]
+        
+        for explanation in work_log_explanations:
+            if explanation.strip():
+                elements.append(Paragraph(explanation, explanation_style))
+            else:
+                elements.append(Spacer(1, 5))
+
+        elements.append(Spacer(1, 15))
+
+        # Page 3: How Calculations Work
+        elements.append(Paragraph("🧮 HOW CALCULATIONS WORK", section_style))
+        
+        calculation_explanations = [
+            "📊 <b>Work Time Calculation:</b>",
+            "   Work Time = Daily Total - Break Time",
+            "   Example: If you were at work for 9 hours and took 1 hour break, your Work Time = 8 hours",
+            "",
+            "💰 <b>Overtime Calculation:</b>",
+            "   Overtime = Work Time - Standard Time",
+            "   Example: If you worked 9 hours and standard time is 8 hours, overtime = 1 hour",
+            "",
+            "🏖️ <b>Holiday Hours:</b>",
+            "   • You start with a certain number of holiday hours per year",
+            "   • Each day you take vacation, sick leave, or personal time, hours are deducted",
+            "   • The remaining balance is shown in the 'Holiday Hours' column",
+            "",
+            "💰 <b>Overtime Balance:</b>",
+            "   • Positive overtime hours accumulate when you work more than standard time",
+            "   • These can be used for time off or paid out",
+            "   • The running balance is shown in the 'Hours Overtime Left' column",
+            "",
+            "📈 <b>Available Time Off:</b>",
+            "   Total Available = Holiday Hours + Overtime Balance",
+            "   This is the total time you can take off."
+        ]
+        
+        for explanation in calculation_explanations:
+            if explanation.strip():
+                elements.append(Paragraph(explanation, explanation_style))
+            else:
+                elements.append(Spacer(1, 5))
+
+        elements.append(Spacer(1, 15))
+
+        # Page 4: Understanding the Data
+        elements.append(Paragraph("🔍 UNDERSTANDING YOUR DATA", section_style))
+        
+        understanding_explanations = [
+            "🟡 <b>Yellow Highlighted Cells:</b>",
+            "   These indicate data that was manually modified from the original upload. This helps you see what changes were made to your timecard data.",
+            "",
+            "📊 <b>Reading the Summary:</b>",
+            "   • Compare 'Hours Worked' vs 'Hours Expected' to see if you met your work requirements",
+            "   • Check 'Overtime Balance' to see if you have extra time available",
+            "   • Review 'Holiday Hours' to know how much vacation time you have left",
+            "",
+            "📅 <b>Understanding Patterns:</b>",
+            "   • Look for consistent work patterns",
+            "   • Identify days with high overtime",
+            "   • Check your break time usage",
+            "",
+            "⚠️ <b>What to Watch For:</b>",
+            "   • Negative overtime balance (means you owe hours)",
+            "   • Low holiday hours remaining",
+            "   • Inconsistent check-in/check-out times",
+            "   • Missing break times on long work days"
+        ]
+        
+        for explanation in understanding_explanations:
+            if explanation.strip():
+                elements.append(Paragraph(explanation, explanation_style))
+            else:
+                elements.append(Spacer(1, 5))
+
+        elements.append(Spacer(1, 15))
+
+        # Page 5: Contact Information
+        elements.append(Paragraph("📞 NEED HELP?", section_style))
+        
+        help_explanations = [
+            "If you have questions about this report or need clarification on any of the data:",
+            "",
+            "📧 <b>Contact your supervisor or HR department</b>",
+            "📱 <b>Check the documentation in the Bulldog Office system</b>",
+            "📋 <b>Review your timecard entries for accuracy</b>",
+            "",
+            "This report is generated automatically based on your timecard data. If you notice any discrepancies, please contact your supervisor immediately."
+        ]
+        
+        for explanation in help_explanations:
+            if explanation.strip():
+                elements.append(Paragraph(explanation, explanation_style))
+            else:
+                elements.append(Spacer(1, 5))
 
         # Build document with header/footer
         doc.build(elements, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
