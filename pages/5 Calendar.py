@@ -124,6 +124,18 @@ def main():
         switch_page("Login")  # Name of your Home.py page (no .py)
         return
     st.title("Interactive Calendar")
+    
+    # Add documentation link
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("""
+        <div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; border-left: 4px solid #2196f3; margin-bottom: 20px;">
+            <strong>📚 Need help?</strong> Check out our Documentation & User Guides for detailed instructions on calendar and holiday management.
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        if st.button("📚 View Documentation", use_container_width=True):
+            switch_page("documentation")
 
     # Load stored events from JSON.
     events = load_events()

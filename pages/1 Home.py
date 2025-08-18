@@ -21,6 +21,18 @@ def main():
         return
     st.title("Timecard Report Uploader")
     
+    # Add documentation link
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("""
+        <div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; border-left: 4px solid #2196f3; margin-bottom: 20px;">
+            <strong>📚 Need help?</strong> Check out our Documentation & User Guides for detailed instructions on how to use this tool.
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        if st.button("📚 View Documentation", use_container_width=True):
+            switch_page("documentation")
+    
     # Add CSS for highlighting changed cells
     st.markdown("""
     <style>

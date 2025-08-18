@@ -4,6 +4,18 @@ import streamlit as st
 from streamlit_extras.switch_page_button import switch_page
 
 st.title("Temp Work History")
+
+# Add documentation link
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.markdown("""
+    <div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; border-left: 4px solid #2196f3; margin-bottom: 20px;">
+        <strong>📚 Need help?</strong> Check out our Documentation & User Guides for detailed instructions on temporary work history management.
+    </div>
+    """, unsafe_allow_html=True)
+with col2:
+    if st.button("📚 View Documentation", use_container_width=True):
+        switch_page("documentation")
 if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
     st.error("You need to log in first.")
     st.session_state["logged_in"] = False
