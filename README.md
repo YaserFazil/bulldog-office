@@ -33,6 +33,7 @@ Bulldog Office is a comprehensive web-based timecard management system designed 
 ### 📁 Data Processing
 - **CSV file upload** for single employees
 - **Bulk timecard processing** for multiple employees
+- **CSV to Frappe HR converter** for external timecard formats
 - **Data validation** and error checking
 - **Interactive data editing**
 
@@ -47,6 +48,7 @@ Bulldog Office is a comprehensive web-based timecard management system designed 
 | **[Bulk Timecard Guide](BULK_TIMECARD_GUIDE.md)** | Processing multiple employee timecards | Data processors |
 | **[Employee Management Guide](EMPLOYEE_MANAGEMENT_GUIDE.md)** | Managing employee profiles and data | Administrators |
 | **[Calendar Guide](CALENDAR_GUIDE.md)** | Holiday and event management | HR managers |
+| **[CSV to Frappe HR Guide](documentation/CSV_TO_FRAPPE_GUIDE.md)** | Convert timecard CSV to Frappe HR format | Data migration |
 
 ### 🚀 Getting Started
 
@@ -176,7 +178,10 @@ bulldog_office/
 │   ├── 3 Work History.py   # Permanent records
 │   ├── 4 Temp Work History.py # Temporary data
 │   ├── 5 Calendar.py       # Holiday management
-│   └── 6 Employee Management.py # Employee profiles
+│   ├── 6 Employee Management.py # Employee profiles
+│   ├── 7 Documentation.py  # User guides
+│   ├── 8 Analytics Dashboard.py # Analytics
+│   └── 9 CSV to Frappe HR.py # CSV converter
 ├── calendar_events.json     # Holiday data
 ├── requirements.txt         # Python dependencies
 └── documentation/           # User guides

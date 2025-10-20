@@ -57,6 +57,11 @@ def main():
             "title": "📊 Analytics Dashboard Guide",
             "description": "Comprehensive analytics and business intelligence insights",
             "icon": "📊"
+        },
+        "CSV_TO_FRAPPE_GUIDE.md": {
+            "title": "📄 CSV to Frappe HR Converter",
+            "description": "Convert timecard CSV files to Frappe HR compatible format",
+            "icon": "🔄"
         }
     }
     
