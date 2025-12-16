@@ -201,23 +201,24 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         # This matches the logic in calculate_holiday_hours_balance_from_table which only counts "Paid Holiday" leave types
         # Other holidays (from Holiday column, public holidays, etc.) should NOT deduct from holiday hours
         # "Sick" leave types should NEVER deduct from holiday hours
+        # Weekends should NEVER deduct from holiday hours (even if mistakenly marked as "Paid Holiday")
         leave_type = row.get("Leave Type", "")
         is_paid_holiday_leave = leave_type and str(leave_type).strip() == "Paid Holiday"
         is_sick_leave = leave_type and str(leave_type).strip() == "Sick"
         
+        # Check if this date is a weekend (Saturday=5, Sunday=6)
+        is_weekend = row_date_obj.weekday() >= 5
+        
         # ONLY "Paid Holiday" leave types deduct from holiday hours (employee is using allocated holiday hours)
         # All other holidays (public holidays, weekends, etc.) are free and don't deduct
-        # Explicitly exclude "Sick" leave types (sick days should NOT deduct from holiday hours)
-        should_deduct = is_paid_holiday_leave and not is_sick_leave
+        # Explicitly exclude "Sick" leave types and weekends (sick days and weekends should NOT deduct from holiday hours)
+        should_deduct = is_paid_holiday_leave and not is_sick_leave and not is_weekend
         
         if should_deduct:
             # Convert standard work hours to decimal for holiday hours deduction
             standard_hours = hhmm_to_decimal(row["Standard Time"])
             remaining_holiday_hours = remaining_holiday_hours - standard_hours
             remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
-            # Debug output
-            if idx < 5 or (idx % 50 == 0):  # Print first 5 and every 50th
-                print(f"[DEBUG compute_running_holiday_hours] Row {idx}: {row_date} - Deducting {standard_hours} hours (Leave Type: {leave_type}), Balance: {remaining_holiday_hours_str}")
         
         holiday_hours_list.append(remaining_holiday_hours_str)
         overtime_list.append(running_overtime_str)

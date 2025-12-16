@@ -359,25 +359,6 @@ def main():
                 df.loc[valid_holiday_mask, "Date"].apply(lambda d: d.strftime("%Y-%m-%d"))
             )
 
-            # Debug: Count Paid Holiday records in the selected period
-            paid_holiday_in_period = df[
-                (df["Leave Type"] == "Paid Holiday") & 
-                (df["Status"] == "On Leave")
-            ]
-            st.write(f"[DEBUG] Initial holiday hours: {holiday_hours}")
-            st.write(f"[DEBUG] Found {len(paid_holiday_in_period)} Paid Holiday records in period {start_date} to {end_date}")
-            if len(paid_holiday_in_period) > 0:
-                # Convert Date to string safely
-                date_strings = []
-                for date_val in paid_holiday_in_period['Date']:
-                    if isinstance(date_val, date):
-                        date_strings.append(date_val.strftime('%Y-%m-%d'))
-                    elif isinstance(date_val, pd.Timestamp):
-                        date_strings.append(date_val.date().strftime('%Y-%m-%d'))
-                    else:
-                        date_strings.append(str(date_val))
-                st.write(f"[DEBUG] Paid Holiday dates: {sorted(date_strings)}")
-            
             df = compute_running_holiday_hours(
                 df,
                 holiday_event_dates,
@@ -387,10 +368,6 @@ def main():
             )
 
             df = df.sort_values("Date").reset_index(drop=True)
-            
-            # Debug: Show final balance
-            final_balance = df.iloc[-1].get("Holiday Hours", "00:00")
-            st.write(f"[DEBUG] Final holiday hours balance: {final_balance}")
 
             # Metrics for PDF summary
             hours_expected_total = 0.0
