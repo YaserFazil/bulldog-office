@@ -156,57 +156,68 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
         row_date_obj = pd.to_datetime(row["Date"]).date()
         
-        # Skip overtime calculation for first row if initial_overtime is "00:00"
-        if idx == 0 and initial_overtime == "00:00":
+        # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
+        if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
+            running_overtime = float(row["Difference (Decimal)"])
+        
+        if running_overtime is not None:
             running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         else:
-            # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
-            if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
-                running_overtime = float(row["Difference (Decimal)"])
-            
-            if running_overtime is not None:
-                running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-            else:
-                running_overtime_str = "00:00"
-            
-            # If this row is a holiday event date...
-            if row_date in holiday_dates or row["Holiday"] == "sick" or row["Holiday"] == "Sick":
-                work_str = row["Work Time"]
-                worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-                
-                # Reward only if employee worked.
-                if worked > 0:
-                    multiplication = float(row["Multiplication"])
-                    worked = worked * multiplication
-                    # Sum extra hours to overtime balance
-                    if running_overtime is not None and idx > 0 or initial_overtime != "00:00":
-                        running_overtime = running_overtime + worked
-                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-            else:
-                work_str = row["Work Time"]
-                worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-                standard_work_hours = hhmm_to_decimal(row["Standard Time"])
-                
-                if worked < standard_work_hours:
-                    not_worked_hours = standard_work_hours - worked
-                    #  Unsum not worked hours from overtime balance
-                    if running_overtime is not None:
-                        running_overtime = running_overtime - not_worked_hours
-                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-                elif worked > standard_work_hours:
-                    extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
-                    
-                    # Sum extra hours to overtime balance
-                    if running_overtime is not None:
-                        running_overtime = running_overtime + extra_hours
-                        running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+            running_overtime_str = "00:00"
         
-        # Decrease holiday hours count if the row's date is not in official_holidays and "Holiday" column is not empty
-        if row_date_obj not in official_holidays and row["Holiday"] not in ["", "sick", "Sick", None] and is_valid_holiday(row["Holiday"]):
+        # If this row is a holiday event date...
+        if row_date in holiday_dates or row["Holiday"] == "sick" or row["Holiday"] == "Sick":
+            work_str = row["Work Time"]
+            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
+            
+            # Reward only if employee worked.
+            if worked > 0:
+                multiplication = float(row["Multiplication"])
+                worked = worked * multiplication
+                # Sum extra hours to overtime balance
+                if running_overtime is not None:
+                    running_overtime = running_overtime + worked
+                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+        else:
+            work_str = row["Work Time"]
+            worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
+            standard_work_hours = hhmm_to_decimal(row["Standard Time"])
+            
+            if worked < standard_work_hours:
+                not_worked_hours = standard_work_hours - worked
+                #  Unsum not worked hours from overtime balance
+                if running_overtime is not None:
+                    running_overtime = running_overtime - not_worked_hours
+                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+            elif worked > standard_work_hours:
+                extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
+                
+                # Sum extra hours to overtime balance
+                if running_overtime is not None:
+                    running_overtime = running_overtime + extra_hours
+                    running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
+        
+        # Decrease holiday hours count ONLY for "Paid Holiday" leave types
+        # This matches the logic in calculate_holiday_hours_balance_from_table which only counts "Paid Holiday" leave types
+        # Other holidays (from Holiday column, public holidays, etc.) should NOT deduct from holiday hours
+        # "Sick" leave types should NEVER deduct from holiday hours
+        leave_type = row.get("Leave Type", "")
+        is_paid_holiday_leave = leave_type and str(leave_type).strip() == "Paid Holiday"
+        is_sick_leave = leave_type and str(leave_type).strip() == "Sick"
+        
+        # ONLY "Paid Holiday" leave types deduct from holiday hours (employee is using allocated holiday hours)
+        # All other holidays (public holidays, weekends, etc.) are free and don't deduct
+        # Explicitly exclude "Sick" leave types (sick days should NOT deduct from holiday hours)
+        should_deduct = is_paid_holiday_leave and not is_sick_leave
+        
+        if should_deduct:
             # Convert standard work hours to decimal for holiday hours deduction
             standard_hours = hhmm_to_decimal(row["Standard Time"])
             remaining_holiday_hours = remaining_holiday_hours - standard_hours
             remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
+            # Debug output
+            if idx < 5 or (idx % 50 == 0):  # Print first 5 and every 50th
+                print(f"[DEBUG compute_running_holiday_hours] Row {idx}: {row_date} - Deducting {standard_hours} hours (Leave Type: {leave_type}), Balance: {remaining_holiday_hours_str}")
         
         holiday_hours_list.append(remaining_holiday_hours_str)
         overtime_list.append(running_overtime_str)

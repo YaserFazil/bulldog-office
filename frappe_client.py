@@ -730,6 +730,54 @@ def calculate_historical_overtime_balance(
                 except (ValueError, TypeError):
                     pass
     
+    # Also fetch Attendance records with "Absent" status to deduct for absent days
+    # This ensures absent days are properly deducted from historical overtime balance
+    attendance_url = f"{base_url}/api/resource/Attendance"
+    attendance_filters = [
+        ["Attendance", "employee", "=", employee_code],
+        ["Attendance", "status", "=", "Absent"],
+        ["Attendance", "attendance_date", "<", start_date.strftime("%Y-%m-%d")],
+    ]
+    
+    attendance_params = {
+        "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
+        "filters": json.dumps(attendance_filters),
+        "limit_page_length": 10000,
+        "order_by": "attendance_date asc",
+    }
+    
+    attendance_resp = requests.get(attendance_url, headers=headers, params=attendance_params, timeout=60)
+    
+    if attendance_resp.status_code == 200:
+        attendance_data = attendance_resp.json()
+        if isinstance(attendance_data, dict) and "data" in attendance_data:
+            absent_records = attendance_data["data"]
+            standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
+            
+            # Deduct standard work hours for each absent day (that's not a holiday)
+            for record in absent_records:
+                try:
+                    attendance_date_str = record.get("attendance_date")
+                    if not attendance_date_str:
+                        continue
+                    
+                    # Parse date
+                    try:
+                        date_obj = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
+                    except:
+                        try:
+                            date_obj = datetime.strptime(attendance_date_str, "%d-%m-%Y").date()
+                        except:
+                            continue
+                    
+                    # Only deduct if it's not a holiday (leave_type should be None or empty for pure absent days)
+                    leave_type = record.get("leave_type", "")
+                    if not leave_type or leave_type == "":
+                        # Deduct standard work hours for absent day
+                        running_overtime_balance -= standard_hours_decimal
+                except Exception:
+                    continue
+    
     # Convert final balance to HH:MM format
     return decimal_hours_to_hhmmss(running_overtime_balance)
 
@@ -780,12 +828,13 @@ def calculate_holiday_hours_balance_from_table(
     if not allocations_by_year:
         return "00:00"
     
-    # Fetch Attendance records with "Paid Holiday" leave type before the date
+    # Fetch ALL Attendance records with "On Leave" status before the date
+    # We need to check both "Paid Holiday" leave types and other holidays
     base_url, _, _ = _get_base_config()
     url = f"{base_url}/api/resource/Attendance"
     filters = [
         ["Attendance", "employee", "=", employee_code],
-        ["Attendance", "leave_type", "=", "Paid Holiday"],
+        ["Attendance", "status", "=", "On Leave"],
     ]
     
     if before_date:
@@ -820,9 +869,21 @@ def calculate_holiday_hours_balance_from_table(
         else:
             return "00:00"  # No allocation for that year
     
+    # Load calendar events to check for public holidays
+    # This ensures we don't count "Paid Holiday" records on public holidays (they're free)
+    from utils import load_calendar_events
+    calendar_events = load_calendar_events()
+    calendar_events_date = {
+        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
+        for date_str, event in calendar_events.items()
+    }
+    
     # Group attendance by year and calculate used hours per year
     standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
     used_hours_by_year: Dict[int, float] = {}
+    
+    # Debug: Track what we're counting
+    debug_paid_holidays = []
     
     for record in attendance_records:
         try:
@@ -839,26 +900,65 @@ def calculate_holiday_hours_balance_from_table(
                 except:
                     continue
             
+            # Check if this date is a public holiday (from calendar events)
+            is_public_holiday = date_obj in calendar_events_date
+            
             year = date_obj.year
             leave_type = record.get("leave_type", "")
             
             # Only count "Paid Holiday" leave type
-            if leave_type and "Paid Holiday" in str(leave_type):
+            # Explicitly exclude "Sick" leave types (sick days should NOT deduct from holiday hours)
+            # This matches the logic in compute_running_holiday_hours where sick days don't deduct
+            leave_type_str = str(leave_type).strip() if leave_type else ""
+            is_paid_holiday = leave_type_str == "Paid Holiday"
+            is_sick = leave_type_str == "Sick"
+            
+            if is_paid_holiday and not is_sick:
                 if year not in used_hours_by_year:
                     used_hours_by_year[year] = 0.0
                 used_hours_by_year[year] += standard_hours_decimal
+                debug_paid_holidays.append({
+                    "date": date_obj.isoformat(),
+                    "leave_type": leave_type_str,
+                    "is_public_holiday": is_public_holiday,
+                    "year": year,
+                    "hours": standard_hours_decimal
+                })
         except Exception as e:
             continue
     
+    # Debug output
+    if before_date:
+        print(f"\n[DEBUG] calculate_holiday_hours_balance_from_table for {employee_code} before {before_date}")
+        print(f"[DEBUG] Allocations by year: {allocations_by_year}")
+        print(f"[DEBUG] Found {len(debug_paid_holidays)} Paid Holiday records:")
+        for ph in debug_paid_holidays:
+            print(f"  - {ph['date']}: {ph['leave_type']} (public_holiday={ph['is_public_holiday']}, year={ph['year']}, hours={ph['hours']})")
+        print(f"[DEBUG] Used hours by year: {used_hours_by_year}")
+    
     # Calculate balance per year (initial - used) for all years with allocations
+    # Only consider years up to and including the before_date year (if provided)
+    # This ensures we don't include future year allocations that haven't been used yet
     total_balance = 0.0
+    max_year = before_date.year if before_date else None
+    
     for year, initial_hours in allocations_by_year.items():
+        # Only consider years up to and including the before_date year
+        if max_year is not None and year > max_year:
+            continue
+            
         used_hours = used_hours_by_year.get(year, 0.0)
         balance = initial_hours - used_hours
         total_balance += balance
+        if before_date:
+            print(f"[DEBUG] Year {year}: Initial={initial_hours}, Used={used_hours}, Balance={balance}, Total={total_balance}")
+    
+    final_balance_hhmm = decimal_hours_to_hhmmss(total_balance)
+    if before_date:
+        print(f"[DEBUG] Final total balance: {final_balance_hhmm} ({total_balance} decimal hours)")
     
     # Convert to HH:MM format
-    return decimal_hours_to_hhmmss(total_balance)
+    return final_balance_hhmm
 
 
 def calculate_holiday_hours_balance_per_year(

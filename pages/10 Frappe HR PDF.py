@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Dict, Optional
 
@@ -203,19 +203,111 @@ def main():
                 checkins_by_date=checkins_by_date,
             )
             
+            # Load calendar events for holidays
+            calendar_events = load_calendar_events()
+            calendar_events_date = {
+                pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
+                for date_str, event in calendar_events.items()
+            }
+            
+            # Get all dates in the selected range
+            all_dates_in_range = set()
+            current_date = start_date
+            while current_date <= end_date:
+                all_dates_in_range.add(current_date)
+                current_date += timedelta(days=1)
+            
+            # Get dates that already have Attendance records
+            existing_dates = {row["Date"] for row in daily_rows if "Date" in row}
+            
+            # Find missing dates (weekends and holidays without Attendance records)
+            missing_weekends_holidays = []
+            for date_obj in all_dates_in_range:
+                if date_obj not in existing_dates:
+                    # Check if it's a weekend (Saturday=5, Sunday=6)
+                    is_weekend = date_obj.weekday() >= 5
+                    # Check if it's in calendar events (could be weekend or public holiday)
+                    holiday_label_from_calendar = calendar_events_date.get(date_obj)
+                    is_in_calendar = holiday_label_from_calendar is not None
+                    
+                    # Determine if it's a public holiday:
+                    # - If it's in calendar events AND NOT a weekend, it's a public holiday
+                    # - If it's in calendar events AND is a weekend, check the label
+                    is_public_holiday = False
+                    if is_in_calendar:
+                        if not is_weekend:
+                            # Not a weekend but in calendar = public holiday
+                            is_public_holiday = True
+                        else:
+                            # It's a weekend, check if calendar label indicates it's also a holiday
+                            holiday_str = str(holiday_label_from_calendar).lower()
+                            # If label contains "holiday" (and not just "weekend"), it's a public holiday on weekend
+                            if "holiday" in holiday_str and holiday_str != "weekend":
+                                is_public_holiday = True
+                    
+                    # Include weekends OR public holidays
+                    if is_weekend or is_public_holiday:
+                        # Determine holiday label and leave type
+                        if is_weekend and is_public_holiday:
+                            # Weekend that is also a public holiday
+                            holiday_label = holiday_label_from_calendar or "Weekend/Holiday"
+                            leave_type = "Public Holiday"  # It's a public holiday, so mark as Paid Holiday
+                        elif is_weekend:
+                            # Just a weekend (not a public holiday)
+                            holiday_label = "Weekend"
+                            leave_type = None  # Weekends are NOT paid holidays
+                        else:
+                            # Public holiday that is NOT a weekend
+                            holiday_label = holiday_label_from_calendar or "Holiday"
+                            leave_type = "Public Holiday"  # Public holidays are paid holidays
+                        
+                        # Create a row for this missing weekend/holiday
+                        day_name = date_obj.strftime("%a").upper()
+                        missing_weekends_holidays.append({
+                            "Day": day_name,
+                            "Date": date_obj,
+                            "IN": None,
+                            "OUT": None,
+                            "Status": "On Leave",
+                            "Leave Type": leave_type,
+                            "Holiday": holiday_label,
+                        })
+            
+            # Combine Attendance records with missing weekends/holidays
+            if missing_weekends_holidays:
+                daily_rows.extend(missing_weekends_holidays)
+            
             if not daily_rows:
                 st.warning("No daily rows generated from Attendance data.")
                 return
             
             df = pd.DataFrame(daily_rows)
 
-            calendar_events = load_calendar_events()
-            calendar_events_date = {
-                pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
-                for date_str, event in calendar_events.items()
-            }
-
-            df["Holiday"] = df["Date"].map(calendar_events_date)
+            # First, populate Holiday column from calendar events (only for rows where Holiday is not already set)
+            # This preserves the Holiday values we set for missing weekends/holidays
+            df["Holiday"] = df.apply(
+                lambda row: row.get("Holiday") if pd.notnull(row.get("Holiday")) and str(row.get("Holiday")).strip() != "" 
+                else calendar_events_date.get(row["Date"]), 
+                axis=1
+            )
+            
+            # Then, mark "Paid Holiday" leave types as holidays (only if Holiday is not already set to a specific value)
+            # This ensures "On Leave" with "Paid Holiday" leave type is considered as holiday
+            # But don't override if Holiday already has a meaningful value (like holiday name)
+            paid_holiday_mask = (
+                (df["Status"] == "On Leave") & 
+                (df["Leave Type"] == "Paid Holiday") &
+                (df["Holiday"].isna() | (df["Holiday"] == "") | (df["Holiday"].astype(str).str.strip() == ""))
+            )
+            df.loc[paid_holiday_mask, "Holiday"] = "Paid Holiday"
+            
+            # Mark "Sick" leave types in the Holiday column
+            # This ensures "On Leave" with "Sick" leave type is marked as "sick" in Holiday column
+            sick_leave_mask = (
+                (df["Status"] == "On Leave") & 
+                (df["Leave Type"] == "Sick")
+            )
+            df.loc[sick_leave_mask, "Holiday"] = "sick"
             df["Break"] = None
             df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
             df["Difference"] = None
@@ -261,11 +353,31 @@ def main():
                 axis=1,
             )
 
+            # Include all dates with non-empty Holiday column (including "Paid Holiday")
             valid_holiday_mask = df["Holiday"].apply(lambda v: pd.notnull(v) and str(v).strip() != "")
             holiday_event_dates = set(
                 df.loc[valid_holiday_mask, "Date"].apply(lambda d: d.strftime("%Y-%m-%d"))
             )
 
+            # Debug: Count Paid Holiday records in the selected period
+            paid_holiday_in_period = df[
+                (df["Leave Type"] == "Paid Holiday") & 
+                (df["Status"] == "On Leave")
+            ]
+            st.write(f"[DEBUG] Initial holiday hours: {holiday_hours}")
+            st.write(f"[DEBUG] Found {len(paid_holiday_in_period)} Paid Holiday records in period {start_date} to {end_date}")
+            if len(paid_holiday_in_period) > 0:
+                # Convert Date to string safely
+                date_strings = []
+                for date_val in paid_holiday_in_period['Date']:
+                    if isinstance(date_val, date):
+                        date_strings.append(date_val.strftime('%Y-%m-%d'))
+                    elif isinstance(date_val, pd.Timestamp):
+                        date_strings.append(date_val.date().strftime('%Y-%m-%d'))
+                    else:
+                        date_strings.append(str(date_val))
+                st.write(f"[DEBUG] Paid Holiday dates: {sorted(date_strings)}")
+            
             df = compute_running_holiday_hours(
                 df,
                 holiday_event_dates,
@@ -275,6 +387,10 @@ def main():
             )
 
             df = df.sort_values("Date").reset_index(drop=True)
+            
+            # Debug: Show final balance
+            final_balance = df.iloc[-1].get("Holiday Hours", "00:00")
+            st.write(f"[DEBUG] Final holiday hours balance: {final_balance}")
 
             # Metrics for PDF summary
             hours_expected_total = 0.0
