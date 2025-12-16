@@ -634,40 +634,76 @@ def calculate_historical_overtime_balance(
         return "00:00"
     
     base_url, _, _ = _get_base_config()
+    headers = _build_auth_headers()
     
-    # Fetch checkins BEFORE the start_date only
-    url = f"{base_url}/api/resource/Employee Checkin"
-    filters = [
+    # Fetch ALL Attendance records BEFORE start_date (same as running calculation)
+    attendance_url = f"{base_url}/api/resource/Attendance"
+    attendance_filters = [
+        ["Attendance", "employee", "=", employee_code],
+        ["Attendance", "attendance_date", "<", start_date.strftime("%Y-%m-%d")],
+    ]
+    
+    attendance_params = {
+        "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
+        "filters": json.dumps(attendance_filters),
+        "limit_page_length": 10000,
+        "order_by": "attendance_date asc",
+    }
+    
+    attendance_resp = requests.get(attendance_url, headers=headers, params=attendance_params, timeout=60)
+    
+    if attendance_resp.status_code != 200:
+        raise FrappeClientError(
+            f"Frappe API error {attendance_resp.status_code}: {attendance_resp.text}"
+        )
+    
+    attendance_data = attendance_resp.json()
+    if not isinstance(attendance_data, dict) or "data" not in attendance_data:
+        raise FrappeClientError(f"Unexpected response format from Frappe: {attendance_data}")
+    
+    attendance_records = attendance_data["data"]
+    
+    if not attendance_records:
+        return "00:00"  # No data before start_date, return zero balance
+    
+    # Fetch checkins BEFORE the start_date to fill in IN/OUT times
+    checkin_url = f"{base_url}/api/resource/Employee Checkin"
+    checkin_filters = [
         ["Employee Checkin", "employee", "=", employee_code],
         ["Employee Checkin", "time", "<", start_date.strftime("%Y-%m-%d 00:00:00")],
     ]
     
-    params = {
+    checkin_params = {
         "fields": '["name", "employee", "time", "log_type", "skip_auto_attendance"]',
-        "filters": json.dumps(filters),
-        "limit_page_length": 50000,  # Large limit to get all historical data
+        "filters": json.dumps(checkin_filters),
+        "limit_page_length": 50000,
         "order_by": "time asc",
     }
     
-    headers = _build_auth_headers()
-    resp = requests.get(url, headers=headers, params=params, timeout=60)
+    checkin_resp = requests.get(checkin_url, headers=headers, params=checkin_params, timeout=60)
     
-    if resp.status_code != 200:
-        raise FrappeClientError(
-            f"Frappe API error {resp.status_code}: {resp.text}"
-        )
+    all_checkins = []
+    if checkin_resp.status_code == 200:
+        checkin_data = checkin_resp.json()
+        if isinstance(checkin_data, dict) and "data" in checkin_data:
+            all_checkins = checkin_data["data"]
     
-    data = resp.json()
-    if not isinstance(data, dict) or "data" not in data:
-        raise FrappeClientError(f"Unexpected response format from Frappe: {data}")
+    # Build checkins_by_date dict (same as running calculation)
+    checkins_by_date: Dict[str, Dict[str, Optional[str]]] = {}
+    if all_checkins:
+        daily_checkins = build_daily_checkins_from_employee_checkins(all_checkins)
+        for checkin_row in daily_checkins:
+            date_key = checkin_row["Date"].isoformat() if isinstance(checkin_row["Date"], date) else str(checkin_row["Date"])
+            checkins_by_date[date_key] = {
+                "IN": checkin_row.get("IN"),
+                "OUT": checkin_row.get("OUT"),
+            }
     
-    all_checkins = data["data"]
-    
-    if not all_checkins:
-        return "00:00"  # No data before start_date, return zero balance
-    
-    # Build daily checkins from all records
-    daily_rows = build_daily_checkins_from_employee_checkins(all_checkins)
+    # Build daily rows from Attendance records (same as running calculation)
+    daily_rows = build_daily_rows_from_attendance_and_checkins(
+        attendance_records=attendance_records,
+        checkins_by_date=checkins_by_date,
+    )
     
     if not daily_rows:
         return "00:00"
@@ -684,6 +720,28 @@ def calculate_historical_overtime_balance(
     df = pd.DataFrame(daily_rows)
     df['Date'] = pd.to_datetime(df['Date'])
     
+    # Set Holiday column from calendar events (same as running calculation)
+    df["Holiday"] = df.apply(
+        lambda row: row.get("Holiday") if pd.notnull(row.get("Holiday")) and str(row.get("Holiday")).strip() != "" 
+        else calendar_events_date.get(row["Date"]), 
+        axis=1
+    )
+    
+    # Mark "Paid Holiday" leave types as holidays (same as running calculation)
+    paid_holiday_mask = (
+        (df["Status"] == "On Leave") & 
+        (df["Leave Type"] == "Paid Holiday") &
+        (df["Holiday"].isna() | (df["Holiday"] == "") | (df["Holiday"].astype(str).str.strip() == ""))
+    )
+    df.loc[paid_holiday_mask, "Holiday"] = "Paid Holiday"
+    
+    # Mark "Sick" leave types in the Holiday column (same as running calculation)
+    sick_leave_mask = (
+        (df["Status"] == "On Leave") & 
+        (df["Leave Type"] == "Sick")
+    )
+    df.loc[sick_leave_mask, "Holiday"] = "sick"
+    
     # Group by year
     df['Year'] = df['Date'].dt.year
     years = sorted(df['Year'].unique())
@@ -696,12 +754,14 @@ def calculate_historical_overtime_balance(
         year_data = df[df['Year'] == year].copy()
         year_data = year_data.sort_values('Date')
         
-        # Calculate work duration for each day
+        # Calculate work duration for each day (only for Present/Half Day, same as running calculation)
         year_data[" Daily Total"] = year_data.apply(
-            lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")), axis=1
+            lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")) 
+            if row.get("Status") in ["Present", "Half Day"] else "", 
+            axis=1
         )
         
-        # Adjust work time and break (using default break rules)
+        # Adjust work time and break (only for Present/Half Day, same as running calculation)
         year_data["Work Time"], year_data["Break"] = zip(
             *year_data.apply(
                 lambda row: adjust_work_time_and_break(
@@ -709,7 +769,7 @@ def calculate_historical_overtime_balance(
                     row.get("Break"),
                     "06:00",  # break_rule_hours
                     "00:30",  # break_hours
-                ),
+                ) if row.get("Status") in ["Present", "Half Day"] else ("", row.get("Break")),
                 axis=1,
             )
         )
@@ -717,95 +777,69 @@ def calculate_historical_overtime_balance(
         # Set standard time for all days
         year_data["Standard Time"] = standard_work_hours_hhmm
         
-        # Calculate difference (work time - standard time) for each day
+        # Calculate difference (work time - standard time) for each day WITH holiday info (same as running calculation)
         year_data["Difference (Decimal)"] = year_data.apply(
             lambda row: compute_time_difference(
                 row.get("Work Time", ""),
                 row.get("Standard Time", ""),
-                None,  # No holiday info in historical calculation
+                row.get("Holiday", ""),  # Use Holiday info (same as running calculation)
                 False,  # Return decimal
             ),
             axis=1,
         )
         
-        # Accumulate overtime balance for this year
-        # Apply multiplication factor (2.0) for Sundays and public holidays
-        for _, row in year_data.iterrows():
+        # Set multiplication factor (1.0 for regular days, 2.0 for Sundays and public holidays)
+        year_data["Multiplication"] = 1.0
+        for idx, row in year_data.iterrows():
             date_obj = row['Date'].date() if hasattr(row['Date'], 'date') else pd.to_datetime(row['Date']).date()
-            
-            # Check if it's a Sunday (weekday == 6) or public holiday
             is_sunday = date_obj.weekday() == 6
             is_public_holiday = date_obj in calendar_events_date
+            if is_sunday or is_public_holiday:
+                year_data.at[idx, "Multiplication"] = 2.0
+        
+        # Build holiday_dates set (same as running calculation)
+        valid_holiday_mask = year_data["Holiday"].apply(lambda v: pd.notnull(v) and str(v).strip() != "")
+        holiday_dates = set(
+            year_data.loc[valid_holiday_mask, "Date"].apply(lambda d: d.strftime("%Y-%m-%d"))
+        )
+        
+        # Accumulate overtime balance for this year, matching EXACT logic from compute_running_holiday_hours
+        for _, row in year_data.iterrows():
+            date_obj = row['Date'].date() if hasattr(row['Date'], 'date') else pd.to_datetime(row['Date']).date()
+            row_date = date_obj.strftime("%Y-%m-%d")
             
             work_time_str = row.get("Work Time", "")
             worked = hhmm_to_decimal(work_time_str) if work_time_str and work_time_str not in ["00:00", "00:00:00"] else 0
+            standard_work_hours = hhmm_to_decimal(standard_work_hours_hhmm)
+            multiplication = float(row.get("Multiplication", 1.0))
             
-            if is_sunday or is_public_holiday:
-                # For Sundays and public holidays: multiply worked hours by 2.0
+            # Check if it's a holiday (same logic as compute_running_holiday_hours)
+            is_holiday = row_date in holiday_dates or row.get("Holiday") == "sick" or row.get("Holiday") == "Sick"
+            
+            if is_holiday:
+                # For holidays/sick: reward only if employee worked (same as running calculation)
                 if worked > 0:
-                    running_overtime_balance += worked * 2.0
+                    running_overtime_balance += worked * multiplication
             else:
-                # For regular days: use the difference (work time - standard time)
-                diff_decimal = row.get("Difference (Decimal)")
-                if diff_decimal is not None and pd.notna(diff_decimal):
-                    try:
-                        diff_val = float(diff_decimal)
-                        running_overtime_balance += diff_val
-                    except (ValueError, TypeError):
-                        pass
-    
-    # Also fetch Attendance records with "Absent" status to deduct for absent days
-    # This ensures absent days are properly deducted from historical overtime balance
-    attendance_url = f"{base_url}/api/resource/Attendance"
-    attendance_filters = [
-        ["Attendance", "employee", "=", employee_code],
-        ["Attendance", "status", "=", "Absent"],
-        ["Attendance", "attendance_date", "<", start_date.strftime("%Y-%m-%d")],
-    ]
-    
-    attendance_params = {
-        "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
-        "filters": json.dumps(attendance_filters),
-        "limit_page_length": 10000,
-        "order_by": "attendance_date asc",
-    }
-    
-    attendance_resp = requests.get(attendance_url, headers=headers, params=attendance_params, timeout=60)
-    
-    if attendance_resp.status_code == 200:
-        attendance_data = attendance_resp.json()
-        if isinstance(attendance_data, dict) and "data" in attendance_data:
-            absent_records = attendance_data["data"]
-            standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
-            
-            # Deduct standard work hours for each absent day (that's not a holiday, Sunday, or public holiday)
-            for record in absent_records:
-                try:
-                    attendance_date_str = record.get("attendance_date")
-                    if not attendance_date_str:
-                        continue
-                    
-                    # Parse date
-                    try:
-                        date_obj = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
-                    except:
+                # For regular days: match EXACT logic from compute_running_holiday_hours
+                # If worked < standard: deduct not_worked_hours
+                # If worked > standard: add extra_hours * multiplication
+                if worked < standard_work_hours:
+                    not_worked_hours = standard_work_hours - worked
+                    running_overtime_balance -= not_worked_hours
+                elif worked > standard_work_hours:
+                    diff_decimal = row.get("Difference (Decimal)")
+                    if diff_decimal is not None and pd.notna(diff_decimal):
                         try:
-                            date_obj = datetime.strptime(attendance_date_str, "%d-%m-%Y").date()
-                        except:
-                            continue
-                    
-                    # Check if it's a Sunday (weekday == 6) or public holiday
-                    is_sunday = date_obj.weekday() == 6
-                    is_public_holiday = date_obj in calendar_events_date
-                    
-                    # Only deduct if it's not a holiday, Sunday, or public holiday
-                    # (leave_type should be None or empty for pure absent days)
-                    leave_type = record.get("leave_type", "")
-                    if (not leave_type or leave_type == "") and not is_sunday and not is_public_holiday:
-                        # Deduct standard work hours for absent day
-                        running_overtime_balance -= standard_hours_decimal
-                except Exception:
-                    continue
+                            diff_val = float(diff_decimal)
+                            # Multiply by multiplication factor (same as running calculation)
+                            extra_hours = diff_val * multiplication
+                            running_overtime_balance += extra_hours
+                        except (ValueError, TypeError):
+                            pass
+    
+    # Note: Absent days are already included in daily_rows from Attendance records
+    # They are processed in the main loop above where worked < standard_work_hours triggers deduction
     
     # Convert final balance to HH:MM format
     return decimal_hours_to_hhmmss(running_overtime_balance)
