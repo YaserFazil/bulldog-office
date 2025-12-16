@@ -493,14 +493,47 @@ def main():
             elements.append(Spacer(1, 30))
 
             last_row = df.iloc[-1]
+            
+            # Calculate Total Sick Days
+            sick_days_count = 0
+            for _, row in df.iterrows():
+                holiday_val = row.get("Holiday", "")
+                leave_type = row.get("Leave Type", "")
+                if (holiday_val and str(holiday_val).strip().lower() == "sick") or \
+                   (leave_type and str(leave_type).strip() == "Sick"):
+                    sick_days_count += 1
+            
+            # Calculate Total Available Time Off (HH:MM)
+            # Combine holiday hours + overtime balance (only if overtime is positive)
+            holiday_hours_str = last_row.get("Holiday Hours", "00:00") or "00:00"
+            overtime_balance_str = last_row.get("Hours Overtime Left", "00:00") or "00:00"
+            
+            holiday_hours_decimal = hhmm_to_decimal(holiday_hours_str)
+            overtime_balance_decimal = hhmm_to_decimal(overtime_balance_str)
+            
+            # Only add overtime if it's positive (overtime, not undertime)
+            total_available_time_off_decimal = holiday_hours_decimal
+            if overtime_balance_decimal > 0:
+                total_available_time_off_decimal += overtime_balance_decimal
+            
+            total_available_time_off_hhmm = decimal_hours_to_hhmmss(total_available_time_off_decimal)
+            
+            # Calculate Total Available Time Off (Days)
+            # Convert HH:MM to days based on standard work hours per day
+            total_available_time_off_days = total_available_time_off_decimal / standard_work_hours
+            total_available_time_off_days_str = f"{total_available_time_off_days:.2f}"
+            
             summary_data = [
                 ["Metric", "Value"],
                 ["Employee", employee_name],
                 ["Pay Period", pay_period],
                 ["Hours worked", hours_worked_str],
                 ["Hours expected", hours_expected_str],
-                ["Overtime/Undertime Balance", last_row.get("Hours Overtime Left", "00:00") or "00:00"],
-                ["Remaining Holiday Hours", last_row.get("Holiday Hours", "00:00") or "00:00"],
+                ["Overtime/Undertime Balance", overtime_balance_str],
+                ["Remaining Holiday Hours", holiday_hours_str],
+                ["Total Sick Days", str(sick_days_count)],
+                ["Total Available Time Off (HH:MM)", total_available_time_off_hhmm],
+                ["Total Available Time Off (Days)", total_available_time_off_days_str],
             ]
 
             summary_table = Table(summary_data, colWidths=[200, 200])
