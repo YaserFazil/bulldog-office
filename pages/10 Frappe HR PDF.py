@@ -465,19 +465,17 @@ def main():
 
             desired_columns = [
                 "Date",
-                "Day",
-                "Status",
-                "Leave Type",
-                "IN",
-                "OUT",
                 " Daily Total",
                 "Break",
-                "Work Time",
-                "Standard Time",
+                "Day",
                 "Holiday",
                 "Holiday Hours",
                 "Hours Overtime Left",
+                "IN",
+                "OUT",
+                "Standard Time",
                 "Multiplication",
+                "Work Time",
             ]
             df_table = df[desired_columns].copy()
 
