@@ -488,6 +488,12 @@ def main():
 
             elements = []
 
+            # -- First Page: Enhanced Summary --
+            # Resize logo
+            logo = Image("https://bulldogsliving.com/img/brand_logo/logo.png", width=200, height=60)
+            elements.append(logo)
+            elements.append(Spacer(1, 30))
+
             # Summary page
             elements.append(Paragraph("WORK HOURS SUMMARY (Frappe HR)", header_style))
             elements.append(Spacer(1, 30))
@@ -524,19 +530,19 @@ def main():
             total_available_time_off_days_str = f"{total_available_time_off_days:.2f}"
             
             summary_data = [
-                ["Metric", "Value"],
-                ["Employee", employee_name],
-                ["Pay Period", pay_period],
-                ["Hours worked", hours_worked_str],
-                ["Hours expected", hours_expected_str],
-                ["Overtime/Undertime Balance", overtime_balance_str],
-                ["Remaining Holiday Hours", holiday_hours_str],
-                ["Total Sick Days", str(sick_days_count)],
-                ["Total Available Time Off (HH:MM)", total_available_time_off_hhmm],
-                ["Total Available Time Off (Days)", total_available_time_off_days_str],
+                ["Metric", "Value", "What This Means"],
+                ["Employee", employee_name, "Your name as recorded in the system"],
+                ["Pay Period", pay_period, "The date range this report covers"],
+                ["Hours worked", hours_worked_str, "Total hours you actually worked (sum of all 'Work Time' entries)"],
+                ["Hours expected", hours_expected_str, "Total hours you were expected to work (sum of all 'Standard Time' entries, excluding holidays)"],
+                ["Overtime/Undertime Balance", overtime_balance_str, "Your current overtime balance. Positive = overtime earned, Negative = undertime owed"],
+                ["Remaining Holiday Hours", holiday_hours_str, "Your remaining paid holiday hours that you can use"],
+                ["Total Sick Days", str(sick_days_count), "Number of days marked as sick leave in this period"],
+                ["Total Available Time Off (HH:MM)", total_available_time_off_hhmm, "Combined hours of holiday time + overtime that you can use for time off"],
+                ["Total Available Time Off (Days)", total_available_time_off_days_str, "Your total available time off converted to full work days (assuming 8-hour workday)"],
             ]
 
-            summary_table = Table(summary_data, colWidths=[200, 200])
+            summary_table = Table(summary_data, colWidths=[150, 150, 420])
             summary_table.setStyle(
                 TableStyle(
                     [
