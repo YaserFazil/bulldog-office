@@ -312,9 +312,44 @@ def main():
             df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
             df["Difference"] = None
             df["Difference (Decimal)"] = None
+            # Initialize Multiplication to 1.0 for all rows first
             df["Multiplication"] = 1.0
             df["Hours Overtime Left"] = None
             df["Holiday Hours"] = None
+            
+            # Set Multiplication to 2.0 for Sundays and Public Holidays
+            # Sunday is weekday() == 6
+            # Public Holidays are in calendar_events_date
+            # Use vectorized operations for better performance and reliability
+            def get_date_obj(date_val):
+                """Convert various date formats to date object"""
+                if isinstance(date_val, date):
+                    return date_val
+                elif isinstance(date_val, pd.Timestamp):
+                    return date_val.date()
+                elif isinstance(date_val, str):
+                    return pd.to_datetime(date_val).date()
+                else:
+                    # Try to convert using pd.to_datetime
+                    return pd.to_datetime(date_val).date()
+            
+            # Convert all dates to date objects for comparison
+            df_dates = df["Date"].apply(get_date_obj)
+            
+            # Check for Sundays (weekday == 6)
+            is_sunday = df_dates.apply(lambda d: d.weekday() == 6)
+            
+            # Check for Public Holidays
+            is_public_holiday = df_dates.apply(lambda d: d in calendar_events_date)
+            
+            # Set Multiplication to 2.0 for Sundays or Public Holidays
+            # Use .copy() to ensure we're working with a proper boolean Series
+            mask = (is_sunday | is_public_holiday).copy()
+            df.loc[mask, "Multiplication"] = 2.0
+            
+            # Ensure Multiplication is explicitly set (defensive check)
+            # This ensures no row has Multiplication > 2.0 or < 1.0
+            df["Multiplication"] = df["Multiplication"].clip(lower=1.0, upper=2.0)
 
             # Only calculate work duration for days when employee was present or half day
             df[" Daily Total"] = df.apply(
@@ -366,6 +401,31 @@ def main():
                 holiday_hours,
                 initial_overtime_str,
             )
+
+            # Re-verify and fix Multiplication after compute_running_holiday_hours
+            # This ensures Multiplication is always correct, even if something went wrong
+            def get_date_obj_safe(date_val):
+                """Convert various date formats to date object"""
+                if isinstance(date_val, date):
+                    return date_val
+                elif isinstance(date_val, pd.Timestamp):
+                    return date_val.date()
+                elif isinstance(date_val, str):
+                    return pd.to_datetime(date_val).date()
+                else:
+                    return pd.to_datetime(date_val).date()
+            
+            # Re-check and set Multiplication correctly
+            df_dates_after = df["Date"].apply(get_date_obj_safe)
+            is_sunday_after = df_dates_after.apply(lambda d: d.weekday() == 6)
+            is_public_holiday_after = df_dates_after.apply(lambda d: d in calendar_events_date)
+            
+            # Reset Multiplication to 1.0 first, then set to 2.0 for Sundays and Public Holidays
+            df["Multiplication"] = 1.0
+            df.loc[is_sunday_after | is_public_holiday_after, "Multiplication"] = 2.0
+            
+            # Final safeguard: clip to ensure no value is outside 1.0-2.0 range
+            df["Multiplication"] = df["Multiplication"].clip(lower=1.0, upper=2.0)
 
             df = df.sort_values("Date").reset_index(drop=True)
 

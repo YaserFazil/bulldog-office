@@ -672,6 +672,14 @@ def calculate_historical_overtime_balance(
     if not daily_rows:
         return "00:00"
     
+    # Load calendar events to identify public holidays
+    from utils import load_calendar_events
+    calendar_events = load_calendar_events()
+    calendar_events_date = {
+        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
+        for date_str, event in calendar_events.items()
+    }
+    
     # Convert to DataFrame for easier processing
     df = pd.DataFrame(daily_rows)
     df['Date'] = pd.to_datetime(df['Date'])
@@ -721,14 +729,30 @@ def calculate_historical_overtime_balance(
         )
         
         # Accumulate overtime balance for this year
+        # Apply multiplication factor (2.0) for Sundays and public holidays
         for _, row in year_data.iterrows():
-            diff_decimal = row.get("Difference (Decimal)")
-            if diff_decimal is not None and pd.notna(diff_decimal):
-                try:
-                    diff_val = float(diff_decimal)
-                    running_overtime_balance += diff_val
-                except (ValueError, TypeError):
-                    pass
+            date_obj = row['Date'].date() if hasattr(row['Date'], 'date') else pd.to_datetime(row['Date']).date()
+            
+            # Check if it's a Sunday (weekday == 6) or public holiday
+            is_sunday = date_obj.weekday() == 6
+            is_public_holiday = date_obj in calendar_events_date
+            
+            work_time_str = row.get("Work Time", "")
+            worked = hhmm_to_decimal(work_time_str) if work_time_str and work_time_str not in ["00:00", "00:00:00"] else 0
+            
+            if is_sunday or is_public_holiday:
+                # For Sundays and public holidays: multiply worked hours by 2.0
+                if worked > 0:
+                    running_overtime_balance += worked * 2.0
+            else:
+                # For regular days: use the difference (work time - standard time)
+                diff_decimal = row.get("Difference (Decimal)")
+                if diff_decimal is not None and pd.notna(diff_decimal):
+                    try:
+                        diff_val = float(diff_decimal)
+                        running_overtime_balance += diff_val
+                    except (ValueError, TypeError):
+                        pass
     
     # Also fetch Attendance records with "Absent" status to deduct for absent days
     # This ensures absent days are properly deducted from historical overtime balance
@@ -754,7 +778,7 @@ def calculate_historical_overtime_balance(
             absent_records = attendance_data["data"]
             standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
             
-            # Deduct standard work hours for each absent day (that's not a holiday)
+            # Deduct standard work hours for each absent day (that's not a holiday, Sunday, or public holiday)
             for record in absent_records:
                 try:
                     attendance_date_str = record.get("attendance_date")
@@ -770,9 +794,14 @@ def calculate_historical_overtime_balance(
                         except:
                             continue
                     
-                    # Only deduct if it's not a holiday (leave_type should be None or empty for pure absent days)
+                    # Check if it's a Sunday (weekday == 6) or public holiday
+                    is_sunday = date_obj.weekday() == 6
+                    is_public_holiday = date_obj in calendar_events_date
+                    
+                    # Only deduct if it's not a holiday, Sunday, or public holiday
+                    # (leave_type should be None or empty for pure absent days)
                     leave_type = record.get("leave_type", "")
-                    if not leave_type or leave_type == "":
+                    if (not leave_type or leave_type == "") and not is_sunday and not is_public_holiday:
                         # Deduct standard work hours for absent day
                         running_overtime_balance -= standard_hours_decimal
                 except Exception:

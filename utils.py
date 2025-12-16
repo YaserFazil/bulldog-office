@@ -143,9 +143,9 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
     if initial_overtime != "00:00":
         running_overtime = hhmm_to_decimal(initial_overtime)
     else:
-        # For first row, use the Difference (Decimal) directly without additional processing
-        first_row_diff = df_sorted["Difference (Decimal)"].iloc[0]
-        running_overtime = float(first_row_diff) if first_row_diff not in ["", None] and pd.notna(first_row_diff) else 0
+        # Start with 0 when initial_overtime is "00:00"
+        # The first row will be processed normally and its worked hours (with multiplication) will be added
+        running_overtime = 0.0
     
     overtime_list = []
     holiday_hours_list = []
