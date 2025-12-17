@@ -19,6 +19,7 @@ import os
 from frappe_import_script import (
     generate_frappe_records_from_ngtecho_csv,
     import_to_frappe_hr,
+    check_existing_records,
 )
 
 # Import from page with number in name using importlib.util
@@ -208,6 +209,44 @@ def main():
                         col_import1, col_import2 = st.columns(2)
                         with col_import1:
                             dry_run = st.checkbox("Dry Run (Validate only, don't import)", value=True)
+                        
+                        # Check for existing records before import
+                        checkin_df_import = st.session_state.get('frappe_checkin_df')
+                        attendance_df_import = st.session_state.get('frappe_attendance_df')
+                        
+                        existing_records = None
+                        if not dry_run and checkin_df_import is not None and attendance_df_import is not None:
+                            if st.button("🔍 Check for Existing Records", use_container_width=True, key="check_existing"):
+                                with st.spinner("Checking for existing records in Frappe HR..."):
+                                    try:
+                                        existing_records = check_existing_records(
+                                            checkin_df=checkin_df_import,
+                                            attendance_df=attendance_df_import,
+                                        )
+                                        st.session_state['existing_records'] = existing_records
+                                    except Exception as e:
+                                        st.error(f"Error checking existing records: {str(e)}")
+                        
+                        # Show existing records warning if found
+                        if 'existing_records' in st.session_state:
+                            existing_records = st.session_state['existing_records']
+                            if existing_records and (existing_records.get('checkin_existing_count', 0) > 0 or existing_records.get('attendance_existing_count', 0) > 0):
+                                st.warning(
+                                    f"⚠️ Found {existing_records.get('checkin_existing_count', 0)} existing check-in records "
+                                    f"and {existing_records.get('attendance_existing_count', 0)} existing attendance records "
+                                    f"that match your import data."
+                                )
+                                overwrite_choice = st.radio(
+                                    "How would you like to proceed?",
+                                    ["Skip existing records (recommended)", "Overwrite existing attendance records"],
+                                    key="overwrite_choice"
+                                )
+                                overwrite_existing = overwrite_choice == "Overwrite existing attendance records"
+                            else:
+                                overwrite_existing = False
+                        else:
+                            overwrite_existing = False
+                        
                         with col_import2:
                             if st.button("Import to Frappe HR", type="primary", use_container_width=True):
                                 with st.spinner("Importing to Frappe HR..."):
@@ -218,10 +257,17 @@ def main():
                                     if checkin_df_import is None or attendance_df_import is None:
                                         st.error("❌ Records not found. Please generate records first.")
                                     else:
+                                        # Get existing records info if available
+                                        existing_records_info = st.session_state.get('existing_records') if not overwrite_existing else None
+                                        skip_existing = not overwrite_existing and existing_records_info is not None
+                                        
                                         results = import_to_frappe_hr(
                                             checkin_df=checkin_df_import,
                                             attendance_df=attendance_df_import,
                                             dry_run=dry_run,
+                                            overwrite_existing=overwrite_existing if not dry_run else False,
+                                            skip_existing=skip_existing,
+                                            existing_records=existing_records_info,
                                         )
                                         
                                         if dry_run:
@@ -230,12 +276,20 @@ def main():
                                             st.success(f"✅ Import completed!")
                                             st.metric("Check-ins Imported", results.get('checkin_imported', 0))
                                             st.metric("Attendance Imported", results.get('attendance_imported', 0))
+                                            
+                                            # Store failed records in session state for reimport
+                                            if not results.get('failed_checkin_df', pd.DataFrame()).empty:
+                                                st.session_state['failed_checkin_df'] = results['failed_checkin_df']
+                                            if not results.get('failed_attendance_df', pd.DataFrame()).empty:
+                                                st.session_state['failed_attendance_df'] = results['failed_attendance_df']
+                                            
                                             if results.get('checkin_failed', 0) > 0 or results.get('attendance_failed', 0) > 0:
                                                 st.warning(f"⚠️ {results.get('checkin_failed', 0)} check-ins and {results.get('attendance_failed', 0)} attendance records failed to import.")
+                                                st.info("💡 You can reimport failed records using the 'Reimport Failed Records' section below.")
                                             if results.get('errors'):
                                                 st.error(f"❌ {len(results['errors'])} errors occurred")
                                                 with st.expander("View Errors"):
-                                                    for error in results['errors'][:10]:
+                                                    for error in results['errors'][:20]:
                                                         st.text(error)
                         
                     finally:
@@ -264,13 +318,55 @@ def main():
             col_import1, col_import2 = st.columns(2)
             with col_import1:
                 dry_run_existing = st.checkbox("Dry Run (Validate only, don't import)", value=True, key="dry_run_existing")
+            
+            # Check for existing records before import
+            existing_records_existing = None
+            if not dry_run_existing:
+                if st.button("🔍 Check for Existing Records", use_container_width=True, key="check_existing_existing"):
+                    with st.spinner("Checking for existing records in Frappe HR..."):
+                        try:
+                            existing_records_existing = check_existing_records(
+                                checkin_df=checkin_df_existing,
+                                attendance_df=attendance_df_existing,
+                            )
+                            st.session_state['existing_records_existing'] = existing_records_existing
+                        except Exception as e:
+                            st.error(f"Error checking existing records: {str(e)}")
+            
+            # Show existing records warning if found
+            if 'existing_records_existing' in st.session_state:
+                existing_records_existing = st.session_state['existing_records_existing']
+                if existing_records_existing and (existing_records_existing.get('checkin_existing_count', 0) > 0 or existing_records_existing.get('attendance_existing_count', 0) > 0):
+                    st.warning(
+                        f"⚠️ Found {existing_records_existing.get('checkin_existing_count', 0)} existing check-in records "
+                        f"and {existing_records_existing.get('attendance_existing_count', 0)} existing attendance records "
+                        f"that match your import data."
+                    )
+                    overwrite_choice_existing = st.radio(
+                        "How would you like to proceed?",
+                        ["Skip existing records (recommended)", "Overwrite existing attendance records"],
+                        key="overwrite_choice_existing"
+                    )
+                    overwrite_existing_existing = overwrite_choice_existing == "Overwrite existing attendance records"
+                else:
+                    overwrite_existing_existing = False
+            else:
+                overwrite_existing_existing = False
+            
             with col_import2:
                 if st.button("Import to Frappe HR", type="primary", use_container_width=True, key="import_existing"):
                     with st.spinner("Importing to Frappe HR..."):
+                        # Get existing records info if available
+                        existing_records_info_existing = st.session_state.get('existing_records_existing') if not overwrite_existing_existing else None
+                        skip_existing_existing = not overwrite_existing_existing and existing_records_info_existing is not None
+                        
                         results = import_to_frappe_hr(
                             checkin_df=checkin_df_existing,
                             attendance_df=attendance_df_existing,
                             dry_run=dry_run_existing,
+                            overwrite_existing=overwrite_existing_existing if not dry_run_existing else False,
+                            skip_existing=skip_existing_existing,
+                            existing_records=existing_records_info_existing,
                         )
                         
                         if dry_run_existing:
@@ -279,19 +375,102 @@ def main():
                             st.success(f"✅ Import completed!")
                             st.metric("Check-ins Imported", results.get('checkin_imported', 0))
                             st.metric("Attendance Imported", results.get('attendance_imported', 0))
+                            
+                            # Store failed records in session state for reimport
+                            if not results.get('failed_checkin_df', pd.DataFrame()).empty:
+                                st.session_state['failed_checkin_df'] = results['failed_checkin_df']
+                            if not results.get('failed_attendance_df', pd.DataFrame()).empty:
+                                st.session_state['failed_attendance_df'] = results['failed_attendance_df']
+                            
                             if results.get('checkin_failed', 0) > 0 or results.get('attendance_failed', 0) > 0:
                                 st.warning(f"⚠️ {results.get('checkin_failed', 0)} check-ins and {results.get('attendance_failed', 0)} attendance records failed to import.")
+                                st.info("💡 You can reimport failed records using the 'Reimport Failed Records' section below.")
                             if results.get('errors'):
                                 st.error(f"❌ {len(results['errors'])} errors occurred")
                                 with st.expander("View Errors"):
-                                    for error in results['errors'][:10]:
+                                    for error in results['errors'][:20]:
                                         st.text(error)
             
             if st.button("Clear Generated Records", key="clear_records"):
                 del st.session_state['frappe_checkin_df']
                 del st.session_state['frappe_attendance_df']
                 del st.session_state['frappe_employee_name']
+                if 'existing_records' in st.session_state:
+                    del st.session_state['existing_records']
                 st.success("✅ Records cleared. Please generate new records.")
+                st.rerun()
+    
+    # Show reimport failed records section
+    if 'failed_checkin_df' in st.session_state or 'failed_attendance_df' in st.session_state:
+        failed_checkin = st.session_state.get('failed_checkin_df', pd.DataFrame())
+        failed_attendance = st.session_state.get('failed_attendance_df', pd.DataFrame())
+        
+        if not failed_checkin.empty or not failed_attendance.empty:
+            st.markdown("---")
+            st.markdown("### 🔄 Reimport Failed Records")
+            
+            failed_checkin_count = len(failed_checkin) if not failed_checkin.empty else 0
+            failed_attendance_count = len(failed_attendance) if not failed_attendance.empty else 0
+            
+            st.warning(f"⚠️ You have {failed_checkin_count} failed check-in records and {failed_attendance_count} failed attendance records from a previous import.")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if not failed_checkin.empty:
+                    st.markdown(f"#### Failed Check-ins ({failed_checkin_count})")
+                    st.dataframe(failed_checkin, use_container_width=True)
+            with col2:
+                if not failed_attendance.empty:
+                    st.markdown(f"#### Failed Attendance ({failed_attendance_count})")
+                    st.dataframe(failed_attendance, use_container_width=True)
+            
+            if st.button("🔄 Reimport Failed Records", type="primary", use_container_width=True, key="reimport_failed"):
+                with st.spinner("Reimporting failed records..."):
+                    results = import_to_frappe_hr(
+                        checkin_df=failed_checkin if not failed_checkin.empty else pd.DataFrame(),
+                        attendance_df=failed_attendance if not failed_attendance.empty else pd.DataFrame(),
+                        dry_run=False,
+                        overwrite_existing=False,
+                    )
+                    
+                    st.success(f"✅ Reimport completed!")
+                    st.metric("Check-ins Reimported", results.get('checkin_imported', 0))
+                    st.metric("Attendance Reimported", results.get('attendance_imported', 0))
+                    
+                    # Update failed records with new failures
+                    if not results.get('failed_checkin_df', pd.DataFrame()).empty:
+                        st.session_state['failed_checkin_df'] = results['failed_checkin_df']
+                    else:
+                        if 'failed_checkin_df' in st.session_state:
+                            del st.session_state['failed_checkin_df']
+                    
+                    if not results.get('failed_attendance_df', pd.DataFrame()).empty:
+                        st.session_state['failed_attendance_df'] = results['failed_attendance_df']
+                    else:
+                        if 'failed_attendance_df' in st.session_state:
+                            del st.session_state['failed_attendance_df']
+                    
+                    if results.get('checkin_failed', 0) > 0 or results.get('attendance_failed', 0) > 0:
+                        st.warning(f"⚠️ {results.get('checkin_failed', 0)} check-ins and {results.get('attendance_failed', 0)} attendance records still failed.")
+                    else:
+                        st.success("🎉 All failed records have been successfully reimported!")
+                        if 'failed_checkin_df' in st.session_state:
+                            del st.session_state['failed_checkin_df']
+                        if 'failed_attendance_df' in st.session_state:
+                            del st.session_state['failed_attendance_df']
+                    
+                    if results.get('errors'):
+                        st.error(f"❌ {len(results['errors'])} errors occurred")
+                        with st.expander("View Errors"):
+                            for error in results['errors'][:20]:
+                                st.text(error)
+            
+            if st.button("🗑️ Clear Failed Records", key="clear_failed"):
+                if 'failed_checkin_df' in st.session_state:
+                    del st.session_state['failed_checkin_df']
+                if 'failed_attendance_df' in st.session_state:
+                    del st.session_state['failed_attendance_df']
+                st.success("✅ Failed records cleared.")
                 st.rerun()
 
 

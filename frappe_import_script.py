@@ -351,10 +351,122 @@ def generate_frappe_records_from_ngtecho_csv(
     return checkin_df, attendance_df
 
 
+def check_existing_records(
+    checkin_df: pd.DataFrame,
+    attendance_df: pd.DataFrame,
+) -> Dict[str, any]:
+    """
+    Check if records already exist in Frappe HR.
+    
+    Args:
+        checkin_df: DataFrame with Employee Check-in records
+        attendance_df: DataFrame with Attendance records
+    
+    Returns:
+        Dict with existing record information
+    """
+    base_url, _, _ = _get_base_config()
+    headers = _build_auth_headers()
+    
+    existing = {
+        'checkin_existing': [],
+        'attendance_existing': [],
+        'checkin_existing_count': 0,
+        'attendance_existing_count': 0,
+    }
+    
+    # Check Employee Check-in records
+    if not checkin_df.empty:
+        # Get unique employees and time ranges
+        employees = checkin_df['Employee'].unique()
+        time_min = checkin_df['Time'].min()
+        time_max = checkin_df['Time'].max()
+        
+        for employee in employees:
+            try:
+                url = f"{base_url}/api/resource/Employee Checkin"
+                filters = [
+                    ["Employee Checkin", "employee", "=", employee],
+                    ["Employee Checkin", "time", ">=", time_min],
+                    ["Employee Checkin", "time", "<=", time_max],
+                ]
+                params = {
+                    "fields": '["name", "employee", "time", "log_type"]',
+                    "filters": json.dumps(filters),
+                    "limit_page_length": 10000,
+                }
+                resp = requests.get(url, headers=headers, params=params, timeout=60)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and "data" in data:
+                        existing_checkins = data["data"]
+                        # Create a set of (employee, time, log_type) tuples for quick lookup
+                        existing_set = {
+                            (c.get("employee"), c.get("time"), c.get("log_type"))
+                            for c in existing_checkins
+                        }
+                        
+                        # Check which records from our DataFrame already exist
+                        for _, row in checkin_df[checkin_df['Employee'] == employee].iterrows():
+                            key = (row['Employee'], row['Time'], row['Log Type'])
+                            if key in existing_set:
+                                existing['checkin_existing'].append(row.to_dict())
+                                existing['checkin_existing_count'] += 1
+            except Exception as e:
+                print(f"Error checking existing check-ins: {e}")
+    
+    # Check Attendance records
+    if not attendance_df.empty:
+        # Get unique employees and date ranges
+        employees = attendance_df['Employee'].unique()
+        date_min = attendance_df['Attendance Date'].min()
+        date_max = attendance_df['Attendance Date'].max()
+        
+        for employee in employees:
+            try:
+                url = f"{base_url}/api/resource/Attendance"
+                filters = [
+                    ["Attendance", "employee", "=", employee],
+                    ["Attendance", "attendance_date", ">=", date_min],
+                    ["Attendance", "attendance_date", "<=", date_max],
+                ]
+                params = {
+                    "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
+                    "filters": json.dumps(filters),
+                    "limit_page_length": 10000,
+                }
+                resp = requests.get(url, headers=headers, params=params, timeout=60)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and "data" in data:
+                        existing_attendance = data["data"]
+                        # Create a set of (employee, attendance_date) tuples for quick lookup
+                        existing_set = {
+                            (a.get("employee"), a.get("attendance_date"))
+                            for a in existing_attendance
+                        }
+                        
+                        # Check which records from our DataFrame already exist
+                        for _, row in attendance_df[attendance_df['Employee'] == employee].iterrows():
+                            key = (row['Employee'], row['Attendance Date'])
+                            if key in existing_set:
+                                existing['attendance_existing'].append(row.to_dict())
+                                existing['attendance_existing_count'] += 1
+            except Exception as e:
+                print(f"Error checking existing attendance: {e}")
+    
+    return existing
+
+
 def import_to_frappe_hr(
     checkin_df: pd.DataFrame,
     attendance_df: pd.DataFrame,
     dry_run: bool = True,
+    overwrite_existing: bool = False,
+    skip_existing: bool = False,
+    existing_records: Optional[Dict] = None,
 ) -> Dict[str, any]:
     """
     Import Employee Check-in and Attendance records to Frappe HR via API.
@@ -363,9 +475,12 @@ def import_to_frappe_hr(
         checkin_df: DataFrame with Employee Check-in records
         attendance_df: DataFrame with Attendance records
         dry_run: If True, only validate without actually importing
+        overwrite_existing: If True, delete existing records before importing (for Attendance only)
+        skip_existing: If True, skip records that already exist (requires existing_records dict)
+        existing_records: Dict with existing records info from check_existing_records()
     
     Returns:
-        Dict with import results and statistics
+        Dict with import results and statistics, including failed records DataFrames
     """
     base_url, _, _ = _get_base_config()
     headers = _build_auth_headers()
@@ -376,7 +491,37 @@ def import_to_frappe_hr(
         'attendance_imported': 0,
         'attendance_failed': 0,
         'errors': [],
+        'failed_checkin_df': pd.DataFrame(),
+        'failed_attendance_df': pd.DataFrame(),
     }
+    
+    # Filter out existing records if skip_existing is True
+    if skip_existing and existing_records:
+        # Filter check-in records
+        if not checkin_df.empty and existing_records.get('checkin_existing'):
+            existing_checkin_set = {
+                (str(r.get('Employee', '')), str(r.get('Time', '')), str(r.get('Log Type', '')))
+                for r in existing_records['checkin_existing']
+            }
+            checkin_df = checkin_df[
+                ~checkin_df.apply(
+                    lambda row: (str(row.get('Employee', '')), str(row.get('Time', '')), str(row.get('Log Type', ''))) in existing_checkin_set,
+                    axis=1
+                )
+            ].copy()
+        
+        # Filter attendance records
+        if not attendance_df.empty and existing_records.get('attendance_existing'):
+            existing_attendance_set = {
+                (str(r.get('Employee', '')), str(r.get('Attendance Date', '')))
+                for r in existing_records['attendance_existing']
+            }
+            attendance_df = attendance_df[
+                ~attendance_df.apply(
+                    lambda row: (str(row.get('Employee', '')), str(row.get('Attendance Date', ''))) in existing_attendance_set,
+                    axis=1
+                )
+            ].copy()
     
     if dry_run:
         return {
@@ -385,6 +530,44 @@ def import_to_frappe_hr(
             'checkin_count': len(checkin_df),
             'attendance_count': len(attendance_df),
         }
+    
+    # Track failed records
+    failed_checkin_records = []
+    failed_attendance_records = []
+    
+    # If overwrite_existing is True, delete existing Attendance records first
+    if overwrite_existing and not attendance_df.empty:
+        employees = attendance_df['Employee'].unique()
+        date_min = attendance_df['Attendance Date'].min()
+        date_max = attendance_df['Attendance Date'].max()
+        
+        for employee in employees:
+            try:
+                url = f"{base_url}/api/resource/Attendance"
+                filters = [
+                    ["Attendance", "employee", "=", employee],
+                    ["Attendance", "attendance_date", ">=", date_min],
+                    ["Attendance", "attendance_date", "<=", date_max],
+                ]
+                params = {
+                    "fields": '["name"]',
+                    "filters": json.dumps(filters),
+                    "limit_page_length": 10000,
+                }
+                resp = requests.get(url, headers=headers, params=params, timeout=60)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and "data" in data:
+                        for record in data["data"]:
+                            record_name = record.get("name")
+                            if record_name:
+                                delete_url = f"{base_url}/api/resource/Attendance/{record_name}"
+                                delete_resp = requests.delete(delete_url, headers=headers, timeout=60)
+                                if delete_resp.status_code not in [200, 202]:
+                                    results['errors'].append(f"Failed to delete existing attendance {record_name}: {delete_resp.text}")
+            except Exception as e:
+                results['errors'].append(f"Error deleting existing attendance: {str(e)}")
     
     # Import Employee Check-in records
     for _, row in checkin_df.iterrows():
@@ -402,10 +585,16 @@ def import_to_frappe_hr(
                 results['checkin_imported'] += 1
             else:
                 results['checkin_failed'] += 1
-                results['errors'].append(f"Check-in failed: {resp.text}")
+                error_msg = resp.text
+                results['errors'].append(f"Check-in failed: {error_msg}")
+                # Store failed record for reimport
+                failed_checkin_records.append(row.to_dict())
         except Exception as e:
             results['checkin_failed'] += 1
-            results['errors'].append(f"Check-in error: {str(e)}")
+            error_msg = str(e)
+            results['errors'].append(f"Check-in error: {error_msg}")
+            # Store failed record for reimport
+            failed_checkin_records.append(row.to_dict())
     
     # Import Attendance records
     for _, row in attendance_df.iterrows():
@@ -426,10 +615,22 @@ def import_to_frappe_hr(
                 results['attendance_imported'] += 1
             else:
                 results['attendance_failed'] += 1
-                results['errors'].append(f"Attendance failed: {resp.text}")
+                error_msg = resp.text
+                results['errors'].append(f"Attendance failed: {error_msg}")
+                # Store failed record for reimport
+                failed_attendance_records.append(row.to_dict())
         except Exception as e:
             results['attendance_failed'] += 1
-            results['errors'].append(f"Attendance error: {str(e)}")
+            error_msg = str(e)
+            results['errors'].append(f"Attendance error: {error_msg}")
+            # Store failed record for reimport
+            failed_attendance_records.append(row.to_dict())
+    
+    # Create DataFrames for failed records
+    if failed_checkin_records:
+        results['failed_checkin_df'] = pd.DataFrame(failed_checkin_records)
+    if failed_attendance_records:
+        results['failed_attendance_df'] = pd.DataFrame(failed_attendance_records)
     
     return results
 
