@@ -317,9 +317,10 @@ def main():
             df["Hours Overtime Left"] = None
             df["Holiday Hours"] = None
             
-            # Set Multiplication to 2.0 for Sundays and Public Holidays
-            # Sunday is weekday() == 6
+            # Set Multiplication to 2.0 for Sundays and Public Holidays (but NOT Saturdays)
+            # Sunday is weekday() == 6, Saturday is weekday() == 5
             # Public Holidays are in calendar_events_date
+            # Saturdays should always be 1.0, even if they're public holidays
             # Use vectorized operations for better performance and reliability
             def get_date_obj(date_val):
                 """Convert various date formats to date object"""
@@ -336,15 +337,18 @@ def main():
             # Convert all dates to date objects for comparison
             df_dates = df["Date"].apply(get_date_obj)
             
+            # Check for Saturdays (weekday == 5) - these should NEVER get 2.0 multiplication
+            is_saturday = df_dates.apply(lambda d: d.weekday() == 5)
+            
             # Check for Sundays (weekday == 6)
             is_sunday = df_dates.apply(lambda d: d.weekday() == 6)
             
             # Check for Public Holidays
             is_public_holiday = df_dates.apply(lambda d: d in calendar_events_date)
             
-            # Set Multiplication to 2.0 for Sundays or Public Holidays
+            # Set Multiplication to 2.0 for Sundays or Public Holidays, but NOT for Saturdays (even if public holiday)
             # Use .copy() to ensure we're working with a proper boolean Series
-            mask = (is_sunday | is_public_holiday).copy()
+            mask = ((is_sunday | is_public_holiday) & ~is_saturday).copy()
             df.loc[mask, "Multiplication"] = 2.0
             
             # Ensure Multiplication is explicitly set (defensive check)
@@ -417,12 +421,13 @@ def main():
             
             # Re-check and set Multiplication correctly
             df_dates_after = df["Date"].apply(get_date_obj_safe)
+            is_saturday_after = df_dates_after.apply(lambda d: d.weekday() == 5)
             is_sunday_after = df_dates_after.apply(lambda d: d.weekday() == 6)
             is_public_holiday_after = df_dates_after.apply(lambda d: d in calendar_events_date)
             
-            # Reset Multiplication to 1.0 first, then set to 2.0 for Sundays and Public Holidays
+            # Reset Multiplication to 1.0 first, then set to 2.0 for Sundays and Public Holidays, but NOT for Saturdays
             df["Multiplication"] = 1.0
-            df.loc[is_sunday_after | is_public_holiday_after, "Multiplication"] = 2.0
+            df.loc[(is_sunday_after | is_public_holiday_after) & ~is_saturday_after, "Multiplication"] = 2.0
             
             # Final safeguard: clip to ensure no value is outside 1.0-2.0 range
             df["Multiplication"] = df["Multiplication"].clip(lower=1.0, upper=2.0)

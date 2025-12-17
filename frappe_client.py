@@ -788,13 +788,15 @@ def calculate_historical_overtime_balance(
             axis=1,
         )
         
-        # Set multiplication factor (1.0 for regular days, 2.0 for Sundays and public holidays)
+        # Set multiplication factor (1.0 for regular days, 2.0 for Sundays and public holidays, but NOT Saturdays)
         year_data["Multiplication"] = 1.0
         for idx, row in year_data.iterrows():
             date_obj = row['Date'].date() if hasattr(row['Date'], 'date') else pd.to_datetime(row['Date']).date()
+            is_saturday = date_obj.weekday() == 5
             is_sunday = date_obj.weekday() == 6
             is_public_holiday = date_obj in calendar_events_date
-            if is_sunday or is_public_holiday:
+            # Set to 2.0 for Sundays or public holidays, but NOT for Saturdays (even if public holiday)
+            if (is_sunday or is_public_holiday) and not is_saturday:
                 year_data.at[idx, "Multiplication"] = 2.0
         
         # Build holiday_dates set (same as running calculation)
