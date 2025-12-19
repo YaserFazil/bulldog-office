@@ -203,6 +203,141 @@ def fill_missing_weekends_holidays(
     return attendance_records
 
 
+def validate_business_days_have_times(
+    dates_df: pd.DataFrame,
+    calendar_events: Optional[Dict] = None,
+) -> Tuple[bool, List[Dict]]:
+    """
+    Validate that all business working days have valid IN and OUT times.
+    
+    Validation rules:
+    - Business working days (weekdays, not holidays): Always require valid IN/OUT times
+    - Weekends/Public holidays/Sick days/Paid holidays:
+      * If IN or OUT time is filled → Include in validation (employee worked that day)
+      * If both IN and OUT are empty → Exclude from validation (employee didn't work)
+    
+    This allows employees who work on weekends/holidays to have their times validated,
+    while skipping validation for days when they didn't work.
+    
+    Args:
+        dates_df: DataFrame with columns: Date, IN, OUT, Is Sick, Is Paid Holiday
+        calendar_events: Optional dict of calendar events (date_str -> event_name)
+    
+    Returns:
+        (is_valid, missing_days_list)
+        is_valid: True if all days that require validation have valid times
+        missing_days_list: List of dicts with date and reason for missing times
+    """
+    if calendar_events is None:
+        calendar_events = load_calendar_events()
+    
+    missing_days = []
+    
+    for _, row in dates_df.iterrows():
+        date_val = row.get('Date')
+        
+        # Convert date to date object if needed
+        try:
+            if isinstance(date_val, str):
+                try:
+                    date_obj = datetime.strptime(date_val, '%Y-%m-%d').date()
+                except:
+                    date_obj = pd.to_datetime(date_val).date()
+            elif isinstance(date_val, date):
+                date_obj = date_val
+            elif hasattr(date_val, 'date'):
+                date_obj = date_val.date()
+            elif pd.isna(date_val):
+                continue
+            else:
+                # Try pandas to_datetime for other types (Timestamp, etc.)
+                date_obj = pd.to_datetime(date_val).date()
+        except Exception:
+            # Skip rows with invalid dates
+            continue
+        
+        # Check if it's a weekend (Saturday=5, Sunday=6)
+        is_weekend = date_obj.weekday() >= 5
+        
+        # Check if it's a public holiday
+        date_str = date_obj.strftime("%Y-%m-%d")
+        is_public_holiday = False
+        if date_str in calendar_events:
+            event = calendar_events[date_str]
+            event_str = str(event).lower()
+            # Check if it's a holiday (not just a weekend marker)
+            if "holiday" in event_str and "weekend" not in event_str:
+                is_public_holiday = True
+            # Also check if it's a weekend that's marked as holiday
+            elif is_weekend and "holiday" in event_str:
+                is_public_holiday = True
+        
+        # Check if marked as sick or paid holiday
+        is_sick = row.get('Is Sick', False)
+        is_paid_holiday = row.get('Is Paid Holiday', False)
+        
+        # Get IN and OUT times first
+        in_time = str(row.get('IN', '') or '').strip()
+        out_time = str(row.get('OUT', '') or '').strip()
+        
+        # Check if employee worked on this day (has at least IN or OUT time)
+        has_work_time = bool(in_time or out_time)
+        
+        # Skip validation ONLY if:
+        # - It's a weekend/public holiday/sick/paid holiday AND
+        # - Employee did NOT work that day (no IN or OUT times)
+        # If employee worked on a weekend/holiday/sick/paid holiday day, we should validate it
+        if (is_weekend or is_public_holiday or is_sick or is_paid_holiday) and not has_work_time:
+            continue
+        
+        # For all other days (business days OR days where employee worked), validate IN and OUT times
+        
+        # Check if times are missing or invalid
+        missing_fields = []
+        if not in_time:
+            missing_fields.append("IN")
+        if not out_time:
+            missing_fields.append("OUT")
+        
+        # Validate time format if present (HH:MM)
+        if in_time:
+            try:
+                parts = in_time.split(':')
+                if len(parts) != 2:
+                    missing_fields.append("IN (invalid format)")
+                else:
+                    hours = int(parts[0])
+                    minutes = int(parts[1])
+                    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+                        missing_fields.append("IN (invalid time)")
+            except:
+                missing_fields.append("IN (invalid format)")
+        
+        if out_time:
+            try:
+                parts = out_time.split(':')
+                if len(parts) != 2:
+                    missing_fields.append("OUT (invalid format)")
+                else:
+                    hours = int(parts[0])
+                    minutes = int(parts[1])
+                    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+                        missing_fields.append("OUT (invalid time)")
+            except:
+                missing_fields.append("OUT (invalid format)")
+        
+        if missing_fields:
+            missing_days.append({
+                'date': date_obj,
+                'date_str': date_obj.strftime('%Y-%m-%d'),
+                'day_name': date_obj.strftime('%A'),
+                'missing_fields': missing_fields,
+            })
+    
+    is_valid = len(missing_days) == 0
+    return is_valid, missing_days
+
+
 def fetch_employee_standard_work_hours(employee_code: str) -> float:
     """
     Fetch standard work hours for an employee from Frappe HR.

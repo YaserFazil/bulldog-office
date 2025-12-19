@@ -21,6 +21,7 @@ from frappe_import_script import (
     import_to_frappe_hr,
     check_existing_records,
     fetch_employee_standard_work_hours,
+    validate_business_days_have_times,
 )
 
 # Import from page with number in name using importlib.util
@@ -156,6 +157,27 @@ def main():
             
             # Step 3: Generate records
             st.markdown("### 🔄 Step 3: Generate Records")
+            
+            # Validate business days before allowing generation
+            from utils import load_calendar_events
+            calendar_events = load_calendar_events()
+            is_valid, missing_days = validate_business_days_have_times(
+                dates_df=edited_df,
+                calendar_events=calendar_events,
+            )
+            
+            if not is_valid:
+                st.error("❌ **Validation Failed**: The following days are missing valid IN/OUT times:")
+                missing_df = pd.DataFrame(missing_days)
+                missing_df['Missing Fields'] = missing_df['missing_fields'].apply(lambda x: ', '.join(x))
+                missing_df_display = missing_df[['date_str', 'day_name', 'Missing Fields']].copy()
+                missing_df_display.columns = ['Date', 'Day', 'Missing Fields']
+                st.dataframe(missing_df_display, use_container_width=True, hide_index=True)
+                st.warning("⚠️ Please fill in the missing IN/OUT times before generating records.")
+                st.info("💡 **Note**: Weekends, public holidays, sick days, and paid holidays are only excluded from validation if they have no IN/OUT times. If you worked on these days (have IN/OUT times filled), they will be validated and require both IN and OUT times.")
+                st.stop()  # Stop execution to prevent generation
+            else:
+                st.success(f"✅ Validation passed! All days that require IN/OUT times have valid entries.")
             
             if st.button("Generate Frappe HR Records", type="primary", use_container_width=True):
                 with st.spinner("Generating Employee Check-in and Attendance records..."):
