@@ -9,7 +9,7 @@ This script:
 """
 
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple
 import re
 import pdfplumber
@@ -500,16 +500,25 @@ def convert_pdf_to_ngteco_csv(pdf_content: bytes, employee_name: Optional[str] =
         if out_col is None:
             return None, "Could not find OUT column in PDF table"
         
-        # Build ngTeco CSV format
-        csv_lines = []
+        # Parse pay period to get date range
+        try:
+            # Pay period format: YYYYMMDD-YYYYMMDD
+            if '-' in pay_period:
+                parts = pay_period.split('-')
+                if len(parts) == 2:
+                    start_date_str = parts[0].strip()
+                    end_date_str = parts[1].strip()
+                    start_date = datetime.strptime(start_date_str, '%Y%m%d').date()
+                    end_date = datetime.strptime(end_date_str, '%Y%m%d').date()
+                else:
+                    return None, f"Invalid pay period format: {pay_period}"
+            else:
+                return None, f"Invalid pay period format: {pay_period}"
+        except Exception as e:
+            return None, f"Error parsing pay period '{pay_period}': {str(e)}"
         
-        # Header lines
-        csv_lines.append(",,,,Timecard Report,,")
-        csv_lines.append(f"Pay Period,,,{pay_period},,,")
-        csv_lines.append(f"Employee,,,{employee_name},,,")
-        csv_lines.append("Date,,IN,OUT,Work Time, Daily Total, Note")
-        
-        # Process each row
+        # Build a dictionary of dates from PDF table
+        pdf_data_by_date = {}
         for _, row in df.iterrows():
             date_val = row.get(date_col)
             in_time_val = row.get(in_col)
@@ -521,6 +530,11 @@ def convert_pdf_to_ngteco_csv(pdf_content: bytes, employee_name: Optional[str] =
             if not date_str:
                 continue
             
+            try:
+                date_obj = datetime.strptime(date_str, '%Y%m%d').date()
+            except:
+                continue
+            
             # Parse times
             in_time = parse_time_from_table(str(in_time_val) if in_time_val else '')
             out_time = parse_time_from_table(str(out_time_val) if out_time_val else '')
@@ -528,27 +542,59 @@ def convert_pdf_to_ngteco_csv(pdf_content: bytes, employee_name: Optional[str] =
             # Get day abbreviation
             if day_val:
                 day_str = str(day_val).strip().upper()
-                # Handle full day names (Monday, Tuesday, etc.) -> take first 3 chars
-                # Handle abbreviations (Mon, Tue, etc.) -> use as is
                 if len(day_str) > 3:
                     day_abbr = day_str[:3]
                 else:
                     day_abbr = day_str
             else:
-                # Try to get day from date
-                try:
-                    date_obj = datetime.strptime(date_str, '%Y%m%d').date()
-                    day_abbr = get_day_abbreviation(date_obj)
-                except:
-                    day_abbr = ''
+                day_abbr = get_day_abbreviation(date_obj)
             
-            # Skip rows with no IN and OUT times
-            if not in_time and not out_time:
-                continue
+            # Store in dictionary (even if IN/OUT are empty)
+            pdf_data_by_date[date_obj] = {
+                'day_abbr': day_abbr,
+                'in_time': in_time or '',
+                'out_time': out_time or ''
+            }
+        
+        # Generate all dates in the pay period range
+        all_dates = []
+        current_date = start_date
+        while current_date <= end_date:
+            all_dates.append(current_date)
+            # Move to next day
+            current_date += timedelta(days=1)
+        
+        # Build ngTeco CSV format
+        csv_lines = []
+        
+        # Header lines
+        csv_lines.append(",,,,Timecard Report,,")
+        csv_lines.append(f"Pay Period,,,{pay_period},,,")
+        csv_lines.append(f"Employee,,,{employee_name},,,")
+        csv_lines.append("Date,,IN,OUT,Work Time, Daily Total, Note")
+        
+        # Process all dates in the range
+        for date_obj in sorted(all_dates):
+            date_str = date_obj.strftime('%Y%m%d')
+            day_abbr = get_day_abbreviation(date_obj)
+            
+            # Check if this date exists in PDF data
+            if date_obj in pdf_data_by_date:
+                # Use data from PDF
+                pdf_data = pdf_data_by_date[date_obj]
+                in_time = pdf_data['in_time']
+                out_time = pdf_data['out_time']
+                # Use day abbreviation from PDF if available, otherwise use calculated one
+                if pdf_data.get('day_abbr'):
+                    day_abbr = pdf_data['day_abbr']
+            else:
+                # Date not in PDF, use empty IN/OUT
+                in_time = ''
+                out_time = ''
             
             # Build CSV row (ngTeco format: Day,Date,IN,OUT,Work Time, Daily Total, Note)
             # Note: Work Time and Daily Total are left empty, Note is also empty
-            csv_row = f"{day_abbr},{date_str},{in_time or ''},{out_time or ''},,"
+            csv_row = f"{day_abbr},{date_str},{in_time},{out_time},,"
             csv_lines.append(csv_row)
         
         # Add total hours line (empty for now, can be calculated if needed)
