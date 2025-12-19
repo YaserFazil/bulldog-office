@@ -4,12 +4,13 @@ Extracts IN/OUT times and dates from PDF reports and converts them to ngTeco CSV
 """
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date
 from io import BytesIO
 import pandas as pd
 
 from streamlit_extras.switch_page_button import switch_page
 from pdf_to_ngteco_script import convert_pdf_to_ngteco_csv
+from frappe_client import fetch_frappe_employees
 
 
 def main():
@@ -40,22 +41,146 @@ def main():
     
     if uploaded_file is not None:
         try:
-            # Read PDF content
-            pdf_content = uploaded_file.read()
+            # Initialize session state for this file
+            file_key = f"pdf_conversion_{uploaded_file.name}"
+            
+            # Read PDF content (only once, store in session state)
+            if file_key not in st.session_state or 'pdf_content' not in st.session_state[file_key]:
+                pdf_content = uploaded_file.read()
+                if file_key not in st.session_state:
+                    st.session_state[file_key] = {}
+                st.session_state[file_key]['pdf_content'] = pdf_content
+            else:
+                pdf_content = st.session_state[file_key]['pdf_content']
             
             st.success(f"✅ PDF file uploaded: {uploaded_file.name}")
             
-            # Convert PDF to ngTeco CSV
-            st.markdown("### 🔄 Converting PDF to ngTeco CSV")
+            # Check if we already have a successful conversion in session state
+            if file_key in st.session_state and st.session_state[file_key].get('csv_content'):
+                csv_content = st.session_state[file_key]['csv_content']
+                error_message = None
+                # Skip to displaying the CSV (don't show manual input section)
+            else:
+                # Convert PDF to ngTeco CSV
+                st.markdown("### 🔄 Converting PDF to ngTeco CSV")
+                
+                with st.spinner("Extracting data from PDF and converting to ngTeco CSV format..."):
+                    csv_content, error_message = convert_pdf_to_ngteco_csv(pdf_content)
+                
+                # If automatic extraction succeeded, store it
+                if csv_content and not error_message:
+                    if file_key not in st.session_state:
+                        st.session_state[file_key] = {}
+                    st.session_state[file_key]['csv_content'] = csv_content
+                    st.session_state[file_key]['pdf_content'] = pdf_content
             
-            with st.spinner("Extracting data from PDF and converting to ngTeco CSV format..."):
-                csv_content, error_message = convert_pdf_to_ngteco_csv(pdf_content)
-            
+            # If extraction failed, allow manual input
             if error_message:
-                st.error(f"❌ Conversion failed: {error_message}")
-                st.info("💡 Make sure the PDF contains a table with Date, IN, and OUT columns.")
-            elif csv_content:
-                st.success("✅ Conversion successful!")
+                st.warning(f"⚠️ Automatic extraction had issues: {error_message}")
+                st.markdown("### 🔧 Manual Input")
+                st.info("💡 Please provide the employee name and pay period manually below.")
+                
+                # Load employees for dropdown
+                if "frappe_employees" not in st.session_state:
+                    try:
+                        with st.spinner("Loading employees from Frappe HR..."):
+                            st.session_state["frappe_employees"] = fetch_frappe_employees()
+                    except Exception as e:
+                        st.warning(f"Could not load employees from Frappe HR: {e}")
+                        st.session_state["frappe_employees"] = []
+                
+                employees = st.session_state.get("frappe_employees", [])
+                employee_options = []
+                code_by_label = {}
+                name_by_code = {}
+                for emp in employees:
+                    code = emp.get("name")
+                    full_name = emp.get("employee_name") or code
+                    label = f"{full_name} ({code})"
+                    employee_options.append(label)
+                    code_by_label[label] = code
+                    name_by_code[code] = full_name
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if employee_options:
+                        selected_label = st.selectbox(
+                            "Select Employee",
+                            ["-- Select Employee --"] + employee_options,
+                            help="Select the employee if automatic extraction failed"
+                        )
+                        if selected_label != "-- Select Employee --":
+                            employee_code = code_by_label[selected_label]
+                            manual_employee = name_by_code.get(employee_code, employee_code)
+                        else:
+                            manual_employee = None
+                    else:
+                        manual_employee = st.text_input(
+                            "Enter Employee Name",
+                            help="Enter the employee name if automatic extraction failed"
+                        )
+                
+                with col2:
+                    # Pay period input
+                    col2a, col2b = st.columns(2)
+                    with col2a:
+                        start_date = st.date_input(
+                            "Pay Period Start",
+                            value=date.today().replace(day=1),
+                            help="Start date of the pay period"
+                        )
+                    with col2b:
+                        end_date = st.date_input(
+                            "Pay Period End",
+                            value=date.today(),
+                            help="End date of the pay period"
+                        )
+                    
+                    if start_date and end_date:
+                        manual_pay_period = f"{start_date.strftime('%Y%m%d')}-{end_date.strftime('%Y%m%d')}"
+                    else:
+                        manual_pay_period = None
+                
+                # Try conversion again with manual inputs
+                if manual_employee and manual_pay_period:
+                    if st.button("🔄 Convert with Manual Input", use_container_width=True, type="primary"):
+                        with st.spinner("Converting PDF with manual inputs..."):
+                            csv_content_new, error_message_new = convert_pdf_to_ngteco_csv(
+                                pdf_content,
+                                employee_name=manual_employee,
+                                pay_period=manual_pay_period
+                            )
+                        if error_message_new:
+                            st.error(f"❌ Conversion failed: {error_message_new}")
+                        else:
+                            # Store successful conversion in session state
+                            st.session_state[file_key] = {
+                                'csv_content': csv_content_new,
+                                'employee_name': manual_employee,
+                                'pay_period': manual_pay_period,
+                                'pdf_content': pdf_content
+                            }
+                            # Update variables to show results immediately
+                            csv_content = csv_content_new
+                            error_message = None
+                            st.success("✅ Conversion successful with manual inputs!")
+                            st.rerun()  # Rerun to show the results
+                else:
+                    st.info("👆 Please select an employee and pay period to continue.")
+                    csv_content = None
+            
+            if csv_content:
+                # Check if this was from manual input
+                if file_key in st.session_state and st.session_state[file_key].get('csv_content') == csv_content:
+                    st.success("✅ Conversion successful!")
+                else:
+                    st.success("✅ Conversion successful!")
+                
+                # Add a button to clear and convert again
+                if st.button("🔄 Convert Again", help="Clear the current conversion and try again"):
+                    if file_key in st.session_state:
+                        del st.session_state[file_key]
+                    st.rerun()
                 
                 # Display preview
                 st.markdown("### 📋 Preview of ngTeco CSV")
