@@ -515,17 +515,15 @@ def main():
                     sick_days_count += 1
             
             # Calculate Total Available Time Off (HH:MM)
-            # Combine holiday hours + overtime balance (only if overtime is positive)
+            # Combine holiday hours + overtime balance (negative undertime will be deducted)
             holiday_hours_str = last_row.get("Holiday Hours", "00:00") or "00:00"
             overtime_balance_str = last_row.get("Hours Overtime Left", "00:00") or "00:00"
             
             holiday_hours_decimal = hhmm_to_decimal(holiday_hours_str)
             overtime_balance_decimal = hhmm_to_decimal(overtime_balance_str)
             
-            # Only add overtime if it's positive (overtime, not undertime)
-            total_available_time_off_decimal = holiday_hours_decimal
-            if overtime_balance_decimal > 0:
-                total_available_time_off_decimal += overtime_balance_decimal
+            # Add overtime balance (positive adds, negative deducts)
+            total_available_time_off_decimal = holiday_hours_decimal + overtime_balance_decimal
             
             total_available_time_off_hhmm = decimal_hours_to_hhmmss(total_available_time_off_decimal)
             
@@ -644,7 +642,7 @@ def main():
                 "",
                 "🏥 <b>Total Sick Days:</b> The number of days in this period that were marked as sick leave.",
                 "",
-                "📈 <b>Total Available Time Off (HH:MM):</b> The combined total of your holiday hours plus overtime balance (if positive) - this is the total time you can take off in hours and minutes.",
+                "📈 <b>Total Available Time Off (HH:MM):</b> The combined total of your holiday hours plus overtime balance (positive overtime adds, negative undertime deducts) - this is the total time you can take off in hours and minutes.",
                 "",
                 "📊 <b>Total Available Time Off (Days):</b> Your available time off converted to full work days (based on your standard work hours per day)."
             ]
@@ -725,7 +723,9 @@ def main():
                 "   • The running balance is shown in the 'Hours Overtime Left' column",
                 "",
                 "📈 <b>Available Time Off:</b>",
-                "   Total Available = Holiday Hours + Overtime Balance (if positive)",
+                "   Total Available = Holiday Hours + Overtime Balance",
+                "   • Positive overtime adds to your available time off",
+                "   • Negative undertime deducts from your available time off",
                 "   This is the total time you can take off."
             ]
             
