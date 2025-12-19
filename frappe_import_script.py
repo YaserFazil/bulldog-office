@@ -128,7 +128,7 @@ def determine_attendance_status(
                 work_hours = hhmm_to_decimal(work_duration)
         
         # Half day if work hours < 50% of standard
-        if work_hours and work_hours < (standard_hours * 0.5):
+        if work_hours and work_hours < (standard_hours * 0.75):
             return "Half Day", None
         
         return "Present", None
