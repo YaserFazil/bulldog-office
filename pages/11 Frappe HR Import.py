@@ -108,11 +108,12 @@ def main():
             # Create columns for selection and editing
             df_dates['Is Sick'] = False
             df_dates['Is Paid Holiday'] = False
+            df_dates['Is Absent'] = False
             df_dates['Is Edited'] = False
             
             # Display dates in a unified data editor
             edited_df = st.data_editor(
-                df_dates[['Date', 'Day', 'IN', 'OUT', 'Note', 'Is Sick', 'Is Paid Holiday', 'Is Edited']],
+                df_dates[['Date', 'Day', 'IN', 'OUT', 'Note', 'Is Sick', 'Is Paid Holiday', 'Is Absent', 'Is Edited']],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -123,6 +124,7 @@ def main():
                     'Note': st.column_config.TextColumn('Note', disabled=True),
                     'Is Sick': st.column_config.CheckboxColumn('Is Sick', help="Check if this day was a sick day"),
                     'Is Paid Holiday': st.column_config.CheckboxColumn('Is Paid Holiday', help="Check if this day was a paid holiday"),
+                    'Is Absent': st.column_config.CheckboxColumn('Is Absent', help="Check if this day was an absent day (no IN/OUT times required)"),
                     'Is Edited': st.column_config.CheckboxColumn('Is Edited', disabled=True, help="Auto-marked if IN/OUT times were edited"),
                 },
                 key="unified_editor",
@@ -174,7 +176,7 @@ def main():
                 missing_df_display.columns = ['Date', 'Day', 'Missing Fields']
                 st.dataframe(missing_df_display, use_container_width=True, hide_index=True)
                 st.warning("⚠️ Please fill in the missing IN/OUT times before generating records.")
-                st.info("💡 **Note**: Weekends, public holidays, sick days, and paid holidays are only excluded from validation if they have no IN/OUT times. If you worked on these days (have IN/OUT times filled), they will be validated and require both IN and OUT times.")
+                st.info("💡 **Note**: Weekends, public holidays, sick days, paid holidays, and absent days are only excluded from validation if they have no IN/OUT times. If you worked on these days (have IN/OUT times filled), they will be validated and require both IN and OUT times.")
                 st.stop()  # Stop execution to prevent generation
             else:
                 st.success(f"✅ Validation passed! All days that require IN/OUT times have valid entries.")

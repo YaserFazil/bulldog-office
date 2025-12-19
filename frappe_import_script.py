@@ -212,7 +212,7 @@ def validate_business_days_have_times(
     
     Validation rules:
     - Business working days (weekdays, not holidays): Always require valid IN/OUT times
-    - Weekends/Public holidays/Sick days/Paid holidays:
+    - Weekends/Public holidays/Sick days/Paid holidays/Absent days:
       * If IN or OUT time is filled → Include in validation (employee worked that day)
       * If both IN and OUT are empty → Exclude from validation (employee didn't work)
     
@@ -220,7 +220,7 @@ def validate_business_days_have_times(
     while skipping validation for days when they didn't work.
     
     Args:
-        dates_df: DataFrame with columns: Date, IN, OUT, Is Sick, Is Paid Holiday
+        dates_df: DataFrame with columns: Date, IN, OUT, Is Sick, Is Paid Holiday, Is Absent
         calendar_events: Optional dict of calendar events (date_str -> event_name)
     
     Returns:
@@ -272,9 +272,10 @@ def validate_business_days_have_times(
             elif is_weekend and "holiday" in event_str:
                 is_public_holiday = True
         
-        # Check if marked as sick or paid holiday
+        # Check if marked as sick, paid holiday, or absent
         is_sick = row.get('Is Sick', False)
         is_paid_holiday = row.get('Is Paid Holiday', False)
+        is_absent = row.get('Is Absent', False)
         
         # Get IN and OUT times first
         in_time = str(row.get('IN', '') or '').strip()
@@ -284,10 +285,10 @@ def validate_business_days_have_times(
         has_work_time = bool(in_time or out_time)
         
         # Skip validation ONLY if:
-        # - It's a weekend/public holiday/sick/paid holiday AND
+        # - It's a weekend/public holiday/sick/paid holiday/absent AND
         # - Employee did NOT work that day (no IN or OUT times)
-        # If employee worked on a weekend/holiday/sick/paid holiday day, we should validate it
-        if (is_weekend or is_public_holiday or is_sick or is_paid_holiday) and not has_work_time:
+        # If employee worked on a weekend/holiday/sick/paid holiday/absent day, we should validate it
+        if (is_weekend or is_public_holiday or is_sick or is_paid_holiday or is_absent) and not has_work_time:
             continue
         
         # For all other days (business days OR days where employee worked), validate IN and OUT times
