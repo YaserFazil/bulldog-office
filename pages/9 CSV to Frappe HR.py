@@ -168,15 +168,13 @@ def parse_ngtecotime_csv(file_content):
             if not date_str or not date_str.isdigit():
                 continue
             
-            # Skip weekend/empty rows if both IN and OUT are empty
-            if not in_time and not out_time:
-                continue
-            
+            # Include all rows with valid dates, even if IN/OUT are empty
+            # This allows users to mark them as paid holidays or sick days in the data editor
             records.append({
                 'day': day,
                 'date': date_str,
-                'in_time': in_time,
-                'out_time': out_time
+                'in_time': in_time or '',
+                'out_time': out_time or ''
             })
     
     return {

@@ -75,16 +75,46 @@ def main():
             with col2:
                 st.info(f"**Pay Period:** {parsed_data['pay_period']}")
             
+            # Load calendar events to check for weekends and public holidays
+            from utils import load_calendar_events
+            calendar_events = load_calendar_events()
+            
             # Create DataFrame for date selection
+            # Filter out weekends and public holidays that don't have IN/OUT times
             date_records = []
             for record in parsed_data['records']:
                 try:
                     date_obj = datetime.strptime(record['date'], '%Y%m%d').date()
+                    in_time = record.get('in_time', '').strip()
+                    out_time = record.get('out_time', '').strip()
+                    has_times = bool(in_time or out_time)
+                    
+                    # Check if it's a weekend (Saturday=5, Sunday=6)
+                    is_weekend = date_obj.weekday() >= 5
+                    
+                    # Check if it's a public holiday
+                    date_str = date_obj.strftime("%Y-%m-%d")
+                    is_public_holiday = False
+                    if date_str in calendar_events:
+                        event = calendar_events[date_str]
+                        event_str = str(event).lower()
+                        # Check if it's a holiday (not just a weekend marker)
+                        if "holiday" in event_str and "weekend" not in event_str:
+                            is_public_holiday = True
+                        # Also check if it's a weekend that's marked as holiday
+                        elif is_weekend and "holiday" in event_str:
+                            is_public_holiday = True
+                    
+                    # Skip weekends and public holidays that don't have IN/OUT times
+                    # Keep business days (even with empty IN/OUT) and weekends/holidays with times
+                    if (is_weekend or is_public_holiday) and not has_times:
+                        continue
+                    
                     date_records.append({
                         'Date': date_obj,
                         'Day': record.get('day', ''),
-                        'IN': record.get('in_time', ''),
-                        'OUT': record.get('out_time', ''),
+                        'IN': in_time,
+                        'OUT': out_time,
                         'Note': record.get('note', ''),
                     })
                 except:
@@ -103,7 +133,7 @@ def main():
             
             # Step 2: Combined editor for dates, times, sick/holiday selection
             st.markdown("### ✏️ Step 2: Review and Edit Daily Records")
-            st.info("💡 You can edit IN/OUT times, select sick days, and paid holiday days. Any edited times will be marked with 'Is Edited' flag in Frappe HR.")
+            st.info("💡 You can edit IN/OUT times, select sick days, paid holiday days, and absent days. Days with empty IN/OUT times should be marked as 'Is Sick', 'Is Paid Holiday', or 'Is Absent' if applicable. Any edited times will be marked with 'Is Edited' flag in Frappe HR.")
             
             # Create columns for selection and editing
             df_dates['Is Sick'] = False

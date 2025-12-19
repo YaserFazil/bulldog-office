@@ -78,6 +78,7 @@ def determine_attendance_status(
     work_hours: Optional[float],
     standard_hours: float = 8.0,
     is_weekend_or_holiday: bool = False,
+    holiday_type: Optional[str] = None,
     note: Optional[str] = None,
     user_selected_sick_dates: Optional[set] = None,
     user_selected_holiday_dates: Optional[set] = None,
@@ -111,9 +112,40 @@ def determine_attendance_status(
     if "sick" in note_lower or note == "Sick":
         return "On Leave", "Sick"
     
-    # Holiday - no check-in needed
-    if is_weekend_or_holiday or "holiday" in note_lower or "vacation" in note_lower:
+    # Holiday from note - no check-in needed
+    if "holiday" in note_lower or "vacation" in note_lower:
         return "On Leave", "Paid Holiday"
+    
+    # Weekends and public holidays - handle differently
+    if is_weekend_or_holiday:
+        # If employee worked on weekend/holiday (has IN/OUT times), treat as Present
+        if in_time or out_time:
+            # Calculate work hours if both times present
+            if in_time and out_time:
+                if work_hours is None:
+                    work_duration = compute_work_duration(in_time, out_time)
+                    if work_duration:
+                        work_hours = hhmm_to_decimal(work_duration)
+                
+                # Half day if work hours < 75% of standard
+                if work_hours and work_hours < (standard_hours * 0.75):
+                    return "Half Day", None
+                
+                return "Present", None
+            else:
+                # Only IN or only OUT on weekend/holiday
+                return "Present", None
+        else:
+            # Weekend/holiday with no work times
+            # Weekends: Mark as "On Leave" with no leave_type (only if user selected "Is Paid Holiday")
+            # Public holidays: Mark as "On Leave" with "Paid Holiday" leave_type
+            if holiday_type == "Holiday":
+                # Public holiday - mark as "Paid Holiday"
+                return "On Leave", "Paid Holiday"
+            else:
+                # Weekend - mark as "On Leave" with no leave_type
+                # Leave type will only be set if user explicitly marked it as "Is Paid Holiday"
+                return "On Leave", None
     
     # Absent - no check-in and no note indicating leave
     if not in_time and not out_time and not note:
@@ -447,6 +479,9 @@ def generate_frappe_records_from_ngtecho_csv(
                 'IN': row.get('IN', ''),
                 'OUT': row.get('OUT', ''),
                 'Is Edited': row.get('Is Edited', False),
+                'Is Sick': row.get('Is Sick', False),
+                'Is Paid Holiday': row.get('Is Paid Holiday', False),
+                'Is Absent': row.get('Is Absent', False),
             }
     
     # Process each record from CSV
@@ -488,7 +523,7 @@ def generate_frappe_records_from_ngtecho_csv(
         
         attendance_status, leave_type = determine_attendance_status(
             in_time, out_time, work_hours, standard_work_hours,
-            is_weekend_holiday, note,
+            is_weekend_holiday, holiday_type, note,
             user_selected_sick_dates=user_selected_sick_dates,
             user_selected_holiday_dates=user_selected_holiday_dates,
             current_date=date_obj,
@@ -541,17 +576,42 @@ def generate_frappe_records_from_ngtecho_csv(
             except Exception as e:
                 print(f"Error processing OUT time for {date_str}: {e}")
         
-        # Generate Attendance record for ALL days
-        attendance_record = {
-            'Employee': employee_username,
-            'Attendance Date': date_obj.strftime('%Y-%m-%d'),  # Use YYYY-MM-DD format for Frappe HR
-            'Status': attendance_status,
-        }
+        # Generate Attendance record only if:
+        # 1. Employee worked (has IN/OUT times), OR
+        # 2. It's a business day (not weekend/public holiday), OR
+        # 3. User explicitly marked it as sick/paid holiday/absent
+        should_create_attendance = False
         
-        if leave_type:
-            attendance_record['Leave Type'] = leave_type
+        # Check if employee worked (has IN/OUT times)
+        has_work_times = bool(in_time or out_time)
         
-        attendance_records.append(attendance_record)
+        # Check if user explicitly marked it (sick, paid holiday, or absent)
+        is_user_marked = False
+        if date_obj in edited_dates_map:
+            edited_data = edited_dates_map[date_obj]
+            if edited_data.get('Is Sick', False) or edited_data.get('Is Paid Holiday', False) or edited_data.get('Is Absent', False):
+                is_user_marked = True
+        # Also check user_selected sets (for backward compatibility)
+        if user_selected_sick_dates and date_obj in user_selected_sick_dates:
+            is_user_marked = True
+        if user_selected_holiday_dates and date_obj in user_selected_holiday_dates:
+            is_user_marked = True
+        
+        # Create attendance record if:
+        # - Employee worked (has times), OR
+        # - It's a business day (not weekend/holiday), OR
+        # - User explicitly marked it
+        if has_work_times or not is_weekend_holiday or is_user_marked:
+            attendance_record = {
+                'Employee': employee_username,
+                'Attendance Date': date_obj.strftime('%Y-%m-%d'),  # Use YYYY-MM-DD format for Frappe HR
+                'Status': attendance_status,
+            }
+            
+            if leave_type:
+                attendance_record['Leave Type'] = leave_type
+            
+            attendance_records.append(attendance_record)
     
     # Auto-detect and fill missing weekends/holidays
     if auto_detect_weekends_holidays and parsed_data.get('pay_period'):
