@@ -294,13 +294,15 @@ def validate_business_days_have_times(
         
         # Check if times are missing or invalid
         missing_fields = []
+        in_time_valid = False
+        out_time_valid = False
+        in_time_obj = None
+        out_time_obj = None
+        
         if not in_time:
             missing_fields.append("IN")
-        if not out_time:
-            missing_fields.append("OUT")
-        
-        # Validate time format if present (HH:MM)
-        if in_time:
+        else:
+            # Validate IN time format (HH:MM)
             try:
                 parts = in_time.split(':')
                 if len(parts) != 2:
@@ -310,10 +312,17 @@ def validate_business_days_have_times(
                     minutes = int(parts[1])
                     if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
                         missing_fields.append("IN (invalid time)")
+                    else:
+                        in_time_valid = True
+                        # Create a time object for comparison
+                        in_time_obj = datetime.strptime(in_time, '%H:%M').time()
             except:
                 missing_fields.append("IN (invalid format)")
         
-        if out_time:
+        if not out_time:
+            missing_fields.append("OUT")
+        else:
+            # Validate OUT time format (HH:MM)
             try:
                 parts = out_time.split(':')
                 if len(parts) != 2:
@@ -323,8 +332,17 @@ def validate_business_days_have_times(
                     minutes = int(parts[1])
                     if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
                         missing_fields.append("OUT (invalid time)")
+                    else:
+                        out_time_valid = True
+                        # Create a time object for comparison
+                        out_time_obj = datetime.strptime(out_time, '%H:%M').time()
             except:
                 missing_fields.append("OUT (invalid format)")
+        
+        # If both times are valid, check if OUT is after IN
+        if in_time_valid and out_time_valid and in_time_obj and out_time_obj:
+            if out_time_obj <= in_time_obj:
+                missing_fields.append("OUT must be after IN")
         
         if missing_fields:
             missing_days.append({
