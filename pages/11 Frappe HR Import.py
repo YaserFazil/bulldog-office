@@ -20,6 +20,7 @@ from frappe_import_script import (
     generate_frappe_records_from_ngtecho_csv,
     import_to_frappe_hr,
     check_existing_records,
+    fetch_employee_standard_work_hours,
 )
 
 # Import from page with number in name using importlib.util
@@ -95,59 +96,66 @@ def main():
             df_dates = pd.DataFrame(date_records)
             df_dates = df_dates.sort_values('Date').reset_index(drop=True)
             
-            # Step 2: User selection for sick/holiday days
-            st.markdown("### 🏥 Step 2: Select Sick Days and Paid Holiday Days")
-            st.markdown("Select which days were **sick days** and which were **paid holiday days**.")
+            # Store original for comparison (to detect edits)
+            df_dates_original = df_dates.copy()
+            st.session_state['df_dates_original'] = df_dates_original
             
-            # Create columns for selection
+            # Step 2: Combined editor for dates, times, sick/holiday selection
+            st.markdown("### ✏️ Step 2: Review and Edit Daily Records")
+            st.info("💡 You can edit IN/OUT times, select sick days, and paid holiday days. Any edited times will be marked with 'Is Edited' flag in Frappe HR.")
+            
+            # Create columns for selection and editing
             df_dates['Is Sick'] = False
             df_dates['Is Paid Holiday'] = False
+            df_dates['Is Edited'] = False
             
-            # Display dates in a data editor for selection
+            # Display dates in a unified data editor
             edited_df = st.data_editor(
-                df_dates[['Date', 'Day', 'IN', 'OUT', 'Is Sick', 'Is Paid Holiday']],
+                df_dates[['Date', 'Day', 'IN', 'OUT', 'Note', 'Is Sick', 'Is Paid Holiday', 'Is Edited']],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     'Date': st.column_config.DateColumn('Date', disabled=True),
                     'Day': st.column_config.TextColumn('Day', disabled=True),
-                    'IN': st.column_config.TextColumn('IN', disabled=True),
-                    'OUT': st.column_config.TextColumn('OUT', disabled=True),
-                    'Is Sick': st.column_config.CheckboxColumn('Is Sick'),
-                    'Is Paid Holiday': st.column_config.CheckboxColumn('Is Paid Holiday'),
-                }
+                    'IN': st.column_config.TextColumn('IN', help="Format: HH:MM (e.g., 09:00). Edit to correct check-in time."),
+                    'OUT': st.column_config.TextColumn('OUT', help="Format: HH:MM (e.g., 17:00). Edit to correct check-out time."),
+                    'Note': st.column_config.TextColumn('Note', disabled=True),
+                    'Is Sick': st.column_config.CheckboxColumn('Is Sick', help="Check if this day was a sick day"),
+                    'Is Paid Holiday': st.column_config.CheckboxColumn('Is Paid Holiday', help="Check if this day was a paid holiday"),
+                    'Is Edited': st.column_config.CheckboxColumn('Is Edited', disabled=True, help="Auto-marked if IN/OUT times were edited"),
+                },
+                key="unified_editor",
             )
             
-            # Extract selected dates
+            # Detect edits by comparing original vs edited IN/OUT times
+            edited_df['Is Edited'] = False
+            for i in range(min(len(edited_df), len(df_dates_original))):
+                original_row = df_dates_original.iloc[i]
+                edited_row = edited_df.iloc[i]
+                
+                # Check if IN or OUT time changed
+                original_in = str(original_row.get('IN', '') or '')
+                edited_in = str(edited_row.get('IN', '') or '')
+                original_out = str(original_row.get('OUT', '') or '')
+                edited_out = str(edited_row.get('OUT', '') or '')
+                
+                if (original_in.strip() != edited_in.strip() or original_out.strip() != edited_out.strip()):
+                    edited_df.at[i, 'Is Edited'] = True
+            
+            # Store edited dataframe in session state
+            st.session_state['df_dates_edited'] = edited_df
+            
+            # Show summary of edited records
+            edited_count = edited_df['Is Edited'].sum()
+            if edited_count > 0:
+                st.success(f"✅ {int(edited_count)} day(s) have been manually edited and will be marked with 'Is Edited' flag in Frappe HR.")
+            
+            # Extract selected dates and edited times
             sick_dates = set(edited_df[edited_df['Is Sick'] == True]['Date'].tolist())
             holiday_dates = set(edited_df[edited_df['Is Paid Holiday'] == True]['Date'].tolist())
             
-            # Step 3: Configuration
-            st.markdown("### ⚙️ Step 3: Configuration")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                standard_hours = st.number_input(
-                    "Standard Work Hours per Day",
-                    min_value=0.0,
-                    max_value=24.0,
-                    value=8.0,
-                    step=0.5,
-                )
-            with col2:
-                auto_detect = st.checkbox(
-                    "Auto-detect weekends/holidays",
-                    value=True,
-                    help="Automatically create records for missing weekends and public holidays"
-                )
-            with col3:
-                multiply_sunday = st.checkbox(
-                    "Multiply Sunday hours by 2.0",
-                    value=True,
-                    help="Multiply work hours for Sundays by 2.0"
-                )
-            
-            # Step 4: Generate records
-            st.markdown("### 🔄 Step 4: Generate Records")
+            # Step 3: Generate records
+            st.markdown("### 🔄 Step 3: Generate Records")
             
             if st.button("Generate Frappe HR Records", type="primary", use_container_width=True):
                 with st.spinner("Generating Employee Check-in and Attendance records..."):
@@ -157,14 +165,34 @@ def main():
                         tmp_path = tmp_file.name
                     
                     try:
-                        # Generate records
+                        # Get edited dates from unified editor
+                        edited_df = st.session_state.get('df_dates_edited', df_dates)
+                        
+                        # Get employee username to fetch and display standard work hours
+                        employee_full_name = parsed_data['employee']
+                        # Get username from the CSV converter module
+                        get_username_by_full_name = csv_converter.get_username_by_full_name
+                        employee_username = get_username_by_full_name(employee_full_name)
+                        
+                        # Fetch standard work hours from Frappe HR to show user
+                        try:
+                            fetched_standard_hours = fetch_employee_standard_work_hours(employee_username)
+                            from utils import decimal_hours_to_hhmmss
+                            standard_hours_str = decimal_hours_to_hhmmss(fetched_standard_hours)
+                            st.info(f"ℹ️ Using standard work hours: **{standard_hours_str}** (fetched from Frappe HR: Employee > Default Shift > Shift Type > custom_standard_work_hours)")
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not fetch standard work hours from Frappe HR: {str(e)}. Using default 8.0 hours.")
+                            fetched_standard_hours = 8.0
+                        
+                        # Generate records using edited IN/OUT times
                         checkin_df, attendance_df = generate_frappe_records_from_ngtecho_csv(
                             csv_file_path=tmp_path,
-                            standard_work_hours=standard_hours,
-                            auto_detect_weekends_holidays=auto_detect,
-                            multiply_sunday_hours=multiply_sunday,
+                            standard_work_hours=fetched_standard_hours,  # Use fetched value from Frappe HR
+                            auto_detect_weekends_holidays=False,  # Default: disabled
+                            multiply_sunday_hours=False,  # Default: disabled
                             user_selected_sick_dates=sick_dates,
                             user_selected_holiday_dates=holiday_dates,
+                            edited_dates_df=edited_df,  # Pass edited dates with IN/OUT times
                         )
                         
                         # Store in session state so they persist across reruns
@@ -183,6 +211,11 @@ def main():
                             st.markdown("#### 📋 Attendance Records Preview")
                             st.dataframe(attendance_df.head(10), use_container_width=True)
                         
+                        # Show summary of edited records
+                        edited_checkin_count = checkin_df['Is Edited'].sum() if 'Is Edited' in checkin_df.columns else 0
+                        if edited_checkin_count > 0:
+                            st.success(f"✅ {int(edited_checkin_count)} check-in record(s) from edited dates will be marked with 'Is Edited' flag in Frappe HR.")
+                        
                         # Download options
                         st.markdown("### 💾 Download Generated Records")
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -190,7 +223,9 @@ def main():
                         
                         excel_buffer = BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            checkin_df.to_excel(writer, sheet_name='Employee Checkin', index=False)
+                            # Export edited checkin_df if available, otherwise use original
+                            checkin_df_export = st.session_state.get('frappe_checkin_df', checkin_df)
+                            checkin_df_export.to_excel(writer, sheet_name='Employee Checkin', index=False)
                             attendance_df.to_excel(writer, sheet_name='Attendance', index=False)
                         excel_buffer.seek(0)
                         

@@ -20,7 +20,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-from frappe_client import _get_base_config, _build_auth_headers, FrappeClientError
+from frappe_client import _get_base_config, _build_auth_headers, FrappeClientError, fetch_employee_time_config
 import importlib.util
 import sys
 import os
@@ -203,20 +203,49 @@ def fill_missing_weekends_holidays(
     return attendance_records
 
 
+def fetch_employee_standard_work_hours(employee_code: str) -> float:
+    """
+    Fetch standard work hours for an employee from Frappe HR.
+    
+    Path: Employee > Default Shift > Shift Type > custom_standard_work_hours
+    
+    Args:
+        employee_code: Frappe Employee code/name
+    
+    Returns:
+        Standard work hours as float (e.g., 8.0). Defaults to 8.0 if not found.
+    """
+    try:
+        time_config = fetch_employee_time_config(employee_code)
+        standard_work_hours_str = time_config.get('standard_work_hours')
+        print(f"Standard work hours: {standard_work_hours_str}")
+        if standard_work_hours_str:
+            # Convert HH:MM format to float
+            return hhmm_to_decimal(standard_work_hours_str)
+        else:
+            # Default to 8.0 if not found
+            return 8.0
+    except Exception as e:
+        print(f"Error fetching standard work hours for {employee_code}: {e}")
+        # Default to 8.0 on error
+        return 8.0
+
+
 def generate_frappe_records_from_ngtecho_csv(
     csv_file_path: str,
-    standard_work_hours: float = 8.0,
-    auto_detect_weekends_holidays: bool = True,
-    multiply_sunday_hours: bool = True,
+    standard_work_hours: Optional[float] = None,
+    auto_detect_weekends_holidays: bool = False,
+    multiply_sunday_hours: bool = False,
     user_selected_sick_dates: Optional[set] = None,
     user_selected_holiday_dates: Optional[set] = None,
+    edited_dates_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Generate both Employee Check-in and Attendance records from ngTecho CSV.
     
     Args:
         csv_file_path: Path to ngTecho CSV file
-        standard_work_hours: Standard work hours per day (default: 8.0)
+        standard_work_hours: Standard work hours per day (float). If None, will fetch from Frappe HR.
         auto_detect_weekends_holidays: Auto-create records for missing weekends/holidays
         multiply_sunday_hours: Multiply Sunday work hours by 2.0
     
@@ -231,6 +260,10 @@ def generate_frappe_records_from_ngtecho_csv(
     employee_full_name = parsed_data['employee']
     employee_username = get_username_by_full_name(employee_full_name)
     
+    # Fetch standard work hours from Frappe HR if not provided
+    if standard_work_hours is None:
+        standard_work_hours = fetch_employee_standard_work_hours(employee_username)
+    
     # Load calendar events for holiday detection
     calendar_events = load_calendar_events()
     
@@ -240,6 +273,27 @@ def generate_frappe_records_from_ngtecho_csv(
     # Lists to store records
     checkin_records = []
     attendance_records = []
+    
+    # Create a mapping of edited dates if provided
+    edited_dates_map = {}
+    if edited_dates_df is not None and not edited_dates_df.empty:
+        for _, row in edited_dates_df.iterrows():
+            date_val = row.get('Date')
+            if isinstance(date_val, date):
+                date_key = date_val
+            elif isinstance(date_val, str):
+                try:
+                    date_key = datetime.strptime(date_val, '%Y-%m-%d').date()
+                except:
+                    continue
+            else:
+                continue
+            
+            edited_dates_map[date_key] = {
+                'IN': row.get('IN', ''),
+                'OUT': row.get('OUT', ''),
+                'Is Edited': row.get('Is Edited', False),
+            }
     
     # Process each record from CSV
     for record in parsed_data['records']:
@@ -251,8 +305,21 @@ def generate_frappe_records_from_ngtecho_csv(
             continue
         
         processed_dates.add(date_obj)
-        in_time = record.get('in_time')
-        out_time = record.get('out_time')
+        
+        # Use edited IN/OUT times if available, otherwise use CSV times
+        if date_obj in edited_dates_map:
+            edited_data = edited_dates_map[date_obj]
+            edited_in = edited_data.get('IN', '')
+            edited_out = edited_data.get('OUT', '')
+            # Use edited times if they're not empty, otherwise fall back to CSV
+            in_time = edited_in if edited_in and str(edited_in).strip() else record.get('in_time')
+            out_time = edited_out if edited_out and str(edited_out).strip() else record.get('out_time')
+            is_date_edited = edited_data.get('Is Edited', False)
+        else:
+            in_time = record.get('in_time')
+            out_time = record.get('out_time')
+            is_date_edited = False
+        
         note = record.get('note', '')
         
         # Check if weekend/holiday
@@ -283,11 +350,17 @@ def generate_frappe_records_from_ngtecho_csv(
                 # Use YYYY-MM-DD HH:MM:SS format for Frappe HR
                 datetime_str = date_obj.strftime('%Y-%m-%d') + f' {hours:02d}:{minutes:02d}:00'
                 
-                checkin_records.append({
+                checkin_record = {
                     'Employee': employee_username,
                     'Time': datetime_str,
                     'Log Type': 'IN'
-                })
+                }
+                
+                # Mark as edited if the date was edited
+                if is_date_edited:
+                    checkin_record['Is Edited'] = True
+                
+                checkin_records.append(checkin_record)
             except Exception as e:
                 print(f"Error processing IN time for {date_str}: {e}")
         
@@ -300,11 +373,17 @@ def generate_frappe_records_from_ngtecho_csv(
                 # Use YYYY-MM-DD HH:MM:SS format for Frappe HR
                 datetime_str = date_obj.strftime('%Y-%m-%d') + f' {hours:02d}:{minutes:02d}:00'
                 
-                checkin_records.append({
+                checkin_record = {
                     'Employee': employee_username,
                     'Time': datetime_str,
                     'Log Type': 'OUT'
-                })
+                }
+                
+                # Mark as edited if the date was edited
+                if is_date_edited:
+                    checkin_record['Is Edited'] = True
+                
+                checkin_records.append(checkin_record)
             except Exception as e:
                 print(f"Error processing OUT time for {date_str}: {e}")
         
@@ -347,6 +426,10 @@ def generate_frappe_records_from_ngtecho_csv(
     # Create DataFrames
     checkin_df = pd.DataFrame(checkin_records) if checkin_records else pd.DataFrame()
     attendance_df = pd.DataFrame(attendance_records) if attendance_records else pd.DataFrame()
+    
+    # Ensure Is Edited column exists (default to False if not set)
+    if not checkin_df.empty and 'Is Edited' not in checkin_df.columns:
+        checkin_df['Is Edited'] = False
     
     return checkin_df, attendance_df
 
@@ -578,6 +661,23 @@ def import_to_frappe_hr(
                 'log_type': row['Log Type'],
             }
             
+            # Add custom_is_edited field if the record was manually edited
+            # Check if 'Is Edited' column exists and is True
+            is_edited = False
+            if 'Is Edited' in row:
+                is_edited_value = row.get('Is Edited')
+                # Handle both boolean and numeric (0/1) values
+                if pd.notna(is_edited_value):
+                    if isinstance(is_edited_value, bool):
+                        is_edited = is_edited_value
+                    elif isinstance(is_edited_value, (int, float)):
+                        is_edited = bool(is_edited_value)
+                    elif str(is_edited_value).lower() in ['true', '1', 'yes']:
+                        is_edited = True
+            
+            if is_edited:
+                checkin_data['custom_is_edited'] = 1  # Frappe uses 1 for True, 0 for False
+            
             url = f"{base_url}/api/resource/Employee Checkin"
             resp = requests.post(url, headers=headers, json=checkin_data, timeout=60)
             
@@ -641,8 +741,8 @@ if __name__ == "__main__":
     checkin_df, attendance_df = generate_frappe_records_from_ngtecho_csv(
         csv_path,
         standard_work_hours=8.0,
-        auto_detect_weekends_holidays=True,
-        multiply_sunday_hours=True,
+        auto_detect_weekends_holidays=False,
+        multiply_sunday_hours=False,
     )
     
     print(f"Generated {len(checkin_df)} check-in records")
