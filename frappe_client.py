@@ -509,7 +509,7 @@ def fetch_employee_checkins(
     ]
 
     params = {
-        "fields": '["name", "employee", "time", "log_type", "skip_auto_attendance"]',
+        "fields": '["name", "employee", "time", "log_type", "skip_auto_attendance", "custom_is_edited"]',
         # Frappe expects JSON string in `filters`
         "filters": json.dumps(filters),
         "limit_page_length": limit,
@@ -543,12 +543,16 @@ def build_daily_checkins_from_employee_checkins(
           * Earliest IN as IN
           * Latest OUT as OUT
       - If only IN or only OUT exists, keep the one we have and leave the other empty.
+      - Track which IN/OUT times are edited (custom_is_edited = 1)
     """
-    by_date: Dict[str, Dict[str, Optional[datetime]]] = {}
+    by_date: Dict[str, Dict[str, any]] = {}
 
     for row in checkins:
         time_str = row.get("time")
         log_type = row.get("log_type")
+        custom_is_edited = row.get("custom_is_edited", 0)
+        is_edited = bool(custom_is_edited == 1 or custom_is_edited is True)
+        
         if not time_str or not log_type:
             continue
 
@@ -563,16 +567,18 @@ def build_daily_checkins_from_employee_checkins(
 
         date_key = ts.date().isoformat()
         if date_key not in by_date:
-            by_date[date_key] = {"in": None, "out": None}
+            by_date[date_key] = {"in": None, "out": None, "in_edited": False, "out_edited": False}
 
         if log_type.upper() == "IN":
             current_in = by_date[date_key]["in"]
             if current_in is None or ts < current_in:
                 by_date[date_key]["in"] = ts
+                by_date[date_key]["in_edited"] = is_edited
         elif log_type.upper() == "OUT":
             current_out = by_date[date_key]["out"]
             if current_out is None or ts > current_out:
                 by_date[date_key]["out"] = ts
+                by_date[date_key]["out_edited"] = is_edited
 
     daily_rows: List[Dict] = []
     for date_key, times in sorted(by_date.items()):
@@ -587,6 +593,8 @@ def build_daily_checkins_from_employee_checkins(
                 "Date": dt.date(),
                 "IN": in_time,
                 "OUT": out_time,
+                "IN_Edited": times.get("in_edited", False),
+                "OUT_Edited": times.get("out_edited", False),
             }
         )
 

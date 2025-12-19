@@ -188,6 +188,7 @@ def main():
             
             # Build checkins by date dictionary for quick lookup
             checkins_by_date: Dict[str, Dict[str, Optional[str]]] = {}
+            edited_times_by_date: Dict[str, Dict[str, bool]] = {}  # Track which IN/OUT times are edited
             if raw_checkins:
                 daily_checkins = build_daily_checkins_from_employee_checkins(raw_checkins)
                 for checkin_row in daily_checkins:
@@ -195,6 +196,10 @@ def main():
                     checkins_by_date[date_key] = {
                         "IN": checkin_row.get("IN"),
                         "OUT": checkin_row.get("OUT"),
+                    }
+                    edited_times_by_date[date_key] = {
+                        "IN_Edited": checkin_row.get("IN_Edited", False),
+                        "OUT_Edited": checkin_row.get("OUT_Edited", False),
                     }
             
             # Build daily rows from Attendance records, filling in IN/OUT from checkins
@@ -282,6 +287,22 @@ def main():
                 return
             
             df = pd.DataFrame(daily_rows)
+            
+            # Add columns to track which IN/OUT times are edited
+            df["IN_Edited"] = df.apply(
+                lambda row: edited_times_by_date.get(
+                    row["Date"].isoformat() if isinstance(row["Date"], date) else str(row["Date"]),
+                    {}
+                ).get("IN_Edited", False),
+                axis=1
+            )
+            df["OUT_Edited"] = df.apply(
+                lambda row: edited_times_by_date.get(
+                    row["Date"].isoformat() if isinstance(row["Date"], date) else str(row["Date"]),
+                    {}
+                ).get("OUT_Edited", False),
+                axis=1
+            )
 
             # First, populate Holiday column from calendar events (only for rows where Holiday is not already set)
             # This preserves the Holiday values we set for missing weekends/holidays
@@ -582,20 +603,45 @@ def main():
             df_table = df[desired_columns].copy()
 
             table_data = [df_table.columns.tolist()] + df_table.astype(str).values.tolist()
+            
+            # Find column indices for IN and OUT
+            in_col_idx = desired_columns.index("IN") if "IN" in desired_columns else None
+            out_col_idx = desired_columns.index("OUT") if "OUT" in desired_columns else None
+            
+            # Build table style with yellow highlighting for edited times
+            table_style_commands = [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2ecc71")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bdc3c7")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f6fa")]),
+            ]
+            
+            # Add yellow background for edited IN/OUT times
+            # Row 0 is header, so data rows start from row 1
+            for row_idx in range(1, len(table_data)):
+                df_row_idx = row_idx - 1  # DataFrame index (0-based)
+                if df_row_idx < len(df):
+                    row_data = df.iloc[df_row_idx]
+                    in_edited = row_data.get("IN_Edited", False)
+                    out_edited = row_data.get("OUT_Edited", False)
+                    
+                    # Apply yellow background to IN column if edited
+                    if in_edited and in_col_idx is not None:
+                        table_style_commands.append(
+                            ("BACKGROUND", (in_col_idx, row_idx), (in_col_idx, row_idx), colors.yellow)
+                        )
+                    
+                    # Apply yellow background to OUT column if edited
+                    if out_edited and out_col_idx is not None:
+                        table_style_commands.append(
+                            ("BACKGROUND", (out_col_idx, row_idx), (out_col_idx, row_idx), colors.yellow)
+                        )
+            
             data_table = Table(table_data, repeatRows=1)
-            data_table.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2ecc71")),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bdc3c7")),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f6fa")]),
-                    ]
-                )
-            )
+            data_table.setStyle(TableStyle(table_style_commands))
             elements.append(data_table)
             elements.append(PageBreak())
 
