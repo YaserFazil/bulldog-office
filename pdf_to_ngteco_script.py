@@ -122,22 +122,90 @@ def extract_metadata_from_pdf(pdf_content: bytes) -> Dict[str, Optional[str]]:
             first_page = pdf.pages[0]
             text = first_page.extract_text()
             
-            if text:
-                # Extract employee name (look for "Employee" label)
-                employee_match = re.search(r'Employee[:\s]+([^\n]+)', text, re.IGNORECASE)
-                if employee_match:
-                    employee_name = employee_match.group(1).strip()
-                    # Remove extra whitespace and clean up
-                    employee_name = ' '.join(employee_name.split())
-                    metadata['employee'] = employee_name
-                
-                # Extract pay period (look for "Pay Period" label)
-                pay_period_match = re.search(r'Pay Period[:\s]+([^\n]+)', text, re.IGNORECASE)
-                if pay_period_match:
-                    pay_period = pay_period_match.group(1).strip()
-                    # Convert format from "2025-01-01 - 2025-01-15" to "20250101-20250115"
-                    pay_period = convert_pay_period_format(pay_period)
-                    metadata['pay_period'] = pay_period
+            # Also try extracting from tables on first page (summary table)
+            first_page_tables = first_page.extract_tables()
+            
+            # Try to extract from summary table first (more reliable)
+            if first_page_tables:
+                for table in first_page_tables:
+                    if not table or len(table) < 2:
+                        continue
+                    
+                    # Look for summary table with "Metric", "Value", "What This Means" columns
+                    header_row = table[0]
+                    header_str = ' '.join([str(cell) if cell else '' for cell in header_row]).lower()
+                    
+                    if 'metric' in header_str and 'value' in header_str:
+                        # Found summary table, extract employee and pay period from Value column
+                        for row in table[1:]:
+                            if len(row) < 2:
+                                continue
+                            
+                            metric = str(row[0] if row[0] else '').strip().lower()
+                            value = str(row[1] if len(row) > 1 and row[1] else '').strip()
+                            
+                            if 'employee' in metric and value and not metadata.get('employee'):
+                                # Clean up employee name (remove explanatory text)
+                                employee_name = re.sub(r'\s+Your name as recorded.*$', '', value, flags=re.IGNORECASE)
+                                employee_name = re.sub(r'\s+as recorded.*$', '', employee_name, flags=re.IGNORECASE)
+                                employee_name = re.sub(r'\s+in the system.*$', '', employee_name, flags=re.IGNORECASE)
+                                employee_name = ' '.join(employee_name.split())
+                                metadata['employee'] = employee_name
+                            
+                            if 'pay period' in metric and value and not metadata.get('pay_period'):
+                                # Clean up pay period (remove explanatory text)
+                                pay_period = re.sub(r'\s+The date range.*$', '', value, flags=re.IGNORECASE)
+                                pay_period = re.sub(r'\s+this report covers.*$', '', pay_period, flags=re.IGNORECASE)
+                                pay_period = re.sub(r'\s+The date.*$', '', pay_period, flags=re.IGNORECASE)
+                                # Extract just the date range part
+                                date_range_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2}\s*[-to]+\s*\d{4}[-/]\d{2}[-/]\d{2})', pay_period)
+                                if date_range_match:
+                                    pay_period = date_range_match.group(1).strip()
+                                # Convert format
+                                pay_period = convert_pay_period_format(pay_period)
+                                metadata['pay_period'] = pay_period
+            
+            # Fallback to text extraction if not found in tables
+            if not metadata.get('employee') or not metadata.get('pay_period'):
+                if text:
+                    # Extract employee name (look for "Employee" label)
+                    # Pattern: "Employee" followed by name, stop before explanatory text
+                    employee_match = re.search(r'Employee[:\s]+([^\n]+?)(?:\s+Your name as recorded|$)', text, re.IGNORECASE)
+                    if not employee_match:
+                        # Fallback: try without the lookahead
+                        employee_match = re.search(r'Employee[:\s]+([^\n]+)', text, re.IGNORECASE)
+                    
+                    if employee_match and not metadata.get('employee'):
+                        employee_name = employee_match.group(1).strip()
+                        # Remove extra explanatory text that might have been captured
+                        employee_name = re.sub(r'\s+Your name as recorded.*$', '', employee_name, flags=re.IGNORECASE)
+                        employee_name = re.sub(r'\s+as recorded.*$', '', employee_name, flags=re.IGNORECASE)
+                        employee_name = re.sub(r'\s+in the system.*$', '', employee_name, flags=re.IGNORECASE)
+                        # Remove extra whitespace and clean up
+                        employee_name = ' '.join(employee_name.split())
+                        metadata['employee'] = employee_name
+                    
+                    # Extract pay period (look for "Pay Period" label)
+                    # Pattern: "Pay Period" followed by date range, stop before explanatory text
+                    pay_period_match = re.search(r'Pay Period[:\s]+([^\n]+?)(?:\s+The date range|$)', text, re.IGNORECASE)
+                    if not pay_period_match:
+                        # Fallback: try without the lookahead
+                        pay_period_match = re.search(r'Pay Period[:\s]+([^\n]+)', text, re.IGNORECASE)
+                    
+                    if pay_period_match and not metadata.get('pay_period'):
+                        pay_period = pay_period_match.group(1).strip()
+                        # Remove extra explanatory text that might have been captured
+                        pay_period = re.sub(r'\s+The date range.*$', '', pay_period, flags=re.IGNORECASE)
+                        pay_period = re.sub(r'\s+this report covers.*$', '', pay_period, flags=re.IGNORECASE)
+                        pay_period = re.sub(r'\s+The date.*$', '', pay_period, flags=re.IGNORECASE)
+                        # Extract just the date range part (before any explanatory text)
+                        # Look for date pattern: YYYY-MM-DD - YYYY-MM-DD or YYYY-MM-DD to YYYY-MM-DD
+                        date_range_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2}\s*[-to]+\s*\d{4}[-/]\d{2}[-/]\d{2})', pay_period)
+                        if date_range_match:
+                            pay_period = date_range_match.group(1).strip()
+                        # Convert format from "2025-01-01 - 2025-01-15" to "20250101-20250115"
+                        pay_period = convert_pay_period_format(pay_period)
+                        metadata['pay_period'] = pay_period
     except Exception as e:
         print(f"Error extracting metadata from PDF: {e}")
     
