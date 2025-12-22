@@ -82,6 +82,7 @@ def determine_attendance_status(
     note: Optional[str] = None,
     user_selected_sick_dates: Optional[set] = None,
     user_selected_holiday_dates: Optional[set] = None,
+    user_selected_absent_dates: Optional[set] = None,
     current_date: Optional[date] = None,
 ) -> Tuple[str, Optional[str]]:
     """
@@ -90,6 +91,7 @@ def determine_attendance_status(
     Args:
         user_selected_sick_dates: Set of dates (date objects) that user marked as sick
         user_selected_holiday_dates: Set of dates (date objects) that user marked as paid holiday
+        user_selected_absent_dates: Set of dates (date objects) that user marked as absent
         current_date: Current date being processed (to check against user selections)
     
     Returns:
@@ -98,7 +100,11 @@ def determine_attendance_status(
         leave_type: "Sick", "Paid Holiday", "Leave Without Pay", None
     """
     # Check user selections first (takes priority)
+    # "Is Absent" has highest priority - if marked, always return "Absent"
     if current_date:
+        if user_selected_absent_dates and current_date in user_selected_absent_dates:
+            return "Absent", None
+        
         if user_selected_sick_dates and current_date in user_selected_sick_dates:
             return "On Leave", "Sick"
         
@@ -462,6 +468,7 @@ def generate_frappe_records_from_ngtecho_csv(
     
     # Create a mapping of edited dates if provided
     edited_dates_map = {}
+    user_selected_absent_dates = set()
     if edited_dates_df is not None and not edited_dates_df.empty:
         for _, row in edited_dates_df.iterrows():
             date_val = row.get('Date')
@@ -483,6 +490,10 @@ def generate_frappe_records_from_ngtecho_csv(
                 'Is Paid Holiday': row.get('Is Paid Holiday', False),
                 'Is Absent': row.get('Is Absent', False),
             }
+            
+            # Collect absent dates for determine_attendance_status
+            if edited_dates_map[date_key].get('Is Absent', False):
+                user_selected_absent_dates.add(date_key)
     
     # Process each record from CSV
     for record in parsed_data['records']:
@@ -495,14 +506,25 @@ def generate_frappe_records_from_ngtecho_csv(
         
         processed_dates.add(date_obj)
         
+        # Check if "Is Absent" is marked - if so, clear IN/OUT times
+        is_absent = False
+        if date_obj in edited_dates_map:
+            is_absent = edited_dates_map[date_obj].get('Is Absent', False)
+        
         # Use edited IN/OUT times if available, otherwise use CSV times
+        # BUT: If "Is Absent" is marked, always clear IN/OUT times
         if date_obj in edited_dates_map:
             edited_data = edited_dates_map[date_obj]
-            edited_in = edited_data.get('IN', '')
-            edited_out = edited_data.get('OUT', '')
-            # Use edited times if they're not empty, otherwise fall back to CSV
-            in_time = edited_in if edited_in and str(edited_in).strip() else record.get('in_time')
-            out_time = edited_out if edited_out and str(edited_out).strip() else record.get('out_time')
+            if is_absent:
+                # Clear times when marked as absent (use empty strings for consistency)
+                in_time = ''
+                out_time = ''
+            else:
+                edited_in = edited_data.get('IN', '')
+                edited_out = edited_data.get('OUT', '')
+                # Use edited times if they're not empty, otherwise fall back to CSV
+                in_time = edited_in if edited_in and str(edited_in).strip() else record.get('in_time')
+                out_time = edited_out if edited_out and str(edited_out).strip() else record.get('out_time')
             is_date_edited = edited_data.get('Is Edited', False)
         else:
             in_time = record.get('in_time')
@@ -526,11 +548,13 @@ def generate_frappe_records_from_ngtecho_csv(
             is_weekend_holiday, holiday_type, note,
             user_selected_sick_dates=user_selected_sick_dates,
             user_selected_holiday_dates=user_selected_holiday_dates,
+            user_selected_absent_dates=user_selected_absent_dates,
             current_date=date_obj,
         )
         
         # Generate Employee Check-in records (only if Present/Half Day with IN/OUT)
-        if attendance_status in ["Present", "Half Day"] and in_time:
+        # NEVER create checkin records if marked as "Absent"
+        if attendance_status in ["Present", "Half Day"] and in_time and not is_absent:
             # IN record
             try:
                 time_parts = in_time.split(':')
@@ -553,7 +577,8 @@ def generate_frappe_records_from_ngtecho_csv(
             except Exception as e:
                 print(f"Error processing IN time for {date_str}: {e}")
         
-        if attendance_status in ["Present", "Half Day"] and out_time:
+        # NEVER create checkin records if marked as "Absent"
+        if attendance_status in ["Present", "Half Day"] and out_time and not is_absent:
             # OUT record
             try:
                 time_parts = out_time.split(':')
