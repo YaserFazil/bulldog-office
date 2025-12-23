@@ -175,6 +175,194 @@ def _calculate_hours_from_time_range(start_time: str, end_time: str) -> Optional
         return None
 
 
+def fetch_employee_shifts_by_period(employee_code: str) -> List[Dict]:
+    """
+    Fetch the custom_shifts_by_period child table from Employee doctype.
+    
+    Args:
+        employee_code: Frappe Employee code/name
+    
+    Returns:
+        List of shift period records with:
+        - start_date: Start date of the period (YYYY-MM-DD format)
+        - end_date: End date of the period (YYYY-MM-DD format)
+        - shift_type: Shift Type name (Link to Shift Type doctype)
+    """
+    base_url, _, _ = _get_base_config()
+    headers = _build_auth_headers()
+    
+    # Fetch employee - don't specify fields to ensure custom fields and child tables are included
+    url = f"{base_url}/api/resource/Employee/{employee_code}"
+    params = {}
+    
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    
+    if resp.status_code != 200:
+        raise FrappeClientError(
+            f"Frappe API error {resp.status_code}: {resp.text}"
+        )
+    
+    data = resp.json()
+    if not isinstance(data, dict) or "data" not in data:
+        raise FrappeClientError(f"Unexpected response format from Frappe: {data}")
+    
+    doc = data["data"]
+    shifts_by_period = doc.get("custom_shifts_by_period", [])
+    
+    # Handle both list format (child table) and None/empty
+    if not shifts_by_period:
+        return []
+    
+    if not isinstance(shifts_by_period, list):
+        return []
+    
+    return shifts_by_period
+
+
+def get_shift_type_for_date(employee_code: str, target_date: date) -> Optional[str]:
+    """
+    Determine which shift type applies for a specific date based on custom_shifts_by_period.
+    
+    Args:
+        employee_code: Frappe Employee code/name
+        target_date: The date to check
+    
+    Returns:
+        Shift Type name if found, None otherwise (will fallback to default_shift)
+    """
+    try:
+        shifts_by_period = fetch_employee_shifts_by_period(employee_code)
+        
+        if not shifts_by_period:
+            return None
+        
+        # Find the shift period that contains the target_date
+        target_date_str = target_date.strftime("%Y-%m-%d")
+        
+        for period in shifts_by_period:
+            start_date_str = period.get("start_date")
+            end_date_str = period.get("end_date")
+            shift_type = period.get("shift_type")
+            
+            if not start_date_str or not end_date_str or not shift_type:
+                continue
+            
+            try:
+                # Parse dates - handle different formats
+                try:
+                    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                except:
+                    try:
+                        start_date = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                    except:
+                        continue
+                
+                try:
+                    end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                except:
+                    try:
+                        end_date = datetime.strptime(end_date_str, "%d-%m-%Y").date()
+                    except:
+                        continue
+                
+                # Check if target_date falls within this period (inclusive)
+                if start_date <= target_date <= end_date:
+                    return shift_type
+            except Exception:
+                continue
+        
+        return None
+    except Exception as e:
+        print(f"Error getting shift type for date {target_date}: {e}")
+        return None
+
+
+def get_standard_work_hours_for_date(employee_code: str, target_date: date) -> Optional[str]:
+    """
+    Get standard work hours for a specific date, considering shift periods.
+    
+    Args:
+        employee_code: Frappe Employee code/name
+        target_date: The date to get standard work hours for
+    
+    Returns:
+        Standard work hours in HH:MM format, or None if not found
+    """
+    base_url, _, _ = _get_base_config()
+    headers = _build_auth_headers()
+    
+    # First, try to get shift type from custom_shifts_by_period
+    shift_type = get_shift_type_for_date(employee_code, target_date)
+    
+    if shift_type:
+        # Fetch Shift Type and get standard work hours
+        try:
+            shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
+            shift_resp = requests.get(shift_url, headers=headers, timeout=30)
+            
+            if shift_resp.status_code == 200:
+                shift_data = shift_resp.json()
+                if isinstance(shift_data, dict) and "data" in shift_data:
+                    shift_doc = shift_data["data"]
+                    std_hours_raw = shift_doc.get("custom_standard_work_hours")
+                    
+                    if std_hours_raw is not None:
+                        try:
+                            # Handle numeric values (int or float)
+                            if isinstance(std_hours_raw, (int, float)):
+                                return _float_hours_to_hhmm(float(std_hours_raw))
+                            # Handle string values
+                            elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
+                                try:
+                                    float_val = float(std_hours_raw)
+                                    return _float_hours_to_hhmm(float_val)
+                                except ValueError:
+                                    # Assume it's already in HH:MM format
+                                    return std_hours_raw.strip()
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"Error fetching shift type {shift_type}: {e}")
+    
+    # Fallback to default shift (existing logic)
+    try:
+        url = f"{base_url}/api/resource/Employee/{employee_code}"
+        resp = requests.get(url, headers=headers, params={}, timeout=30)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict) and "data" in data:
+                doc = data["data"]
+                default_shift = doc.get("default_shift")
+                
+                if default_shift:
+                    shift_url = f"{base_url}/api/resource/Shift Type/{default_shift}"
+                    shift_resp = requests.get(shift_url, headers=headers, timeout=30)
+                    
+                    if shift_resp.status_code == 200:
+                        shift_data = shift_resp.json()
+                        if isinstance(shift_data, dict) and "data" in shift_data:
+                            shift_doc = shift_data["data"]
+                            std_hours_raw = shift_doc.get("custom_standard_work_hours")
+                            
+                            if std_hours_raw is not None:
+                                try:
+                                    if isinstance(std_hours_raw, (int, float)):
+                                        return _float_hours_to_hhmm(float(std_hours_raw))
+                                    elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
+                                        try:
+                                            float_val = float(std_hours_raw)
+                                            return _float_hours_to_hhmm(float_val)
+                                        except ValueError:
+                                            return std_hours_raw.strip()
+                                except Exception:
+                                    pass
+    except Exception as e:
+        print(f"Error fetching default shift: {e}")
+    
+    return None
+
+
 def fetch_employee_time_config(employee_code: str, report_start_date: Optional[date] = None) -> Dict[str, Optional[str]]:
     """
     Fetch per-employee configuration from Frappe for:

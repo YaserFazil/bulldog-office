@@ -20,7 +20,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-from frappe_client import _get_base_config, _build_auth_headers, FrappeClientError, fetch_employee_time_config
+from frappe_client import _get_base_config, _build_auth_headers, FrappeClientError, fetch_employee_time_config, _float_hours_to_hhmm
 import importlib.util
 import sys
 import os
@@ -395,19 +395,34 @@ def validate_business_days_have_times(
     return is_valid, missing_days
 
 
-def fetch_employee_standard_work_hours(employee_code: str) -> float:
+def fetch_employee_standard_work_hours(employee_code: str, target_date: Optional[date] = None) -> float:
     """
     Fetch standard work hours for an employee from Frappe HR.
     
+    If target_date is provided, will check custom_shifts_by_period to find the correct
+    shift type for that date. Otherwise, uses the default shift.
+    
     Path: Employee > Default Shift > Shift Type > custom_standard_work_hours
+    OR: Employee > custom_shifts_by_period > Shift Type > custom_standard_work_hours
     
     Args:
         employee_code: Frappe Employee code/name
+        target_date: Optional date to get date-specific standard work hours
     
     Returns:
         Standard work hours as float (e.g., 8.0). Defaults to 8.0 if not found.
     """
     try:
+        from frappe_client import get_standard_work_hours_for_date
+        
+        # If target_date is provided, try to get date-specific hours
+        if target_date:
+            standard_work_hours_str = get_standard_work_hours_for_date(employee_code, target_date)
+            if standard_work_hours_str:
+                # Convert HH:MM format to float
+                return hhmm_to_decimal(standard_work_hours_str)
+        
+        # Fallback to default shift (existing logic)
         time_config = fetch_employee_time_config(employee_code)
         standard_work_hours_str = time_config.get('standard_work_hours')
         print(f"Standard work hours: {standard_work_hours_str}")
@@ -452,10 +467,6 @@ def generate_frappe_records_from_ngtecho_csv(
     employee_full_name = parsed_data['employee']
     employee_username = get_username_by_full_name(employee_full_name)
     
-    # Fetch standard work hours from Frappe HR if not provided
-    if standard_work_hours is None:
-        standard_work_hours = fetch_employee_standard_work_hours(employee_username)
-    
     # Load calendar events for holiday detection
     calendar_events = load_calendar_events()
     
@@ -465,6 +476,128 @@ def generate_frappe_records_from_ngtecho_csv(
     # Lists to store records
     checkin_records = []
     attendance_records = []
+    
+    # Pre-fetch shifts_by_period once to avoid repeated API calls
+    shifts_by_period = []
+    shift_type_cache: Dict[str, Optional[str]] = {}  # Cache shift type -> standard hours mapping
+    default_shift_hours: Optional[float] = None
+    
+    try:
+        from frappe_client import fetch_employee_shifts_by_period, get_standard_work_hours_for_date
+        shifts_by_period = fetch_employee_shifts_by_period(employee_username)
+        
+        # Pre-fetch default shift hours as fallback
+        try:
+            time_config = fetch_employee_time_config(employee_username)
+            default_shift_hours_str = time_config.get('standard_work_hours')
+            if default_shift_hours_str:
+                default_shift_hours = hhmm_to_decimal(default_shift_hours_str)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Warning: Could not fetch shifts_by_period for {employee_username}: {e}")
+        shifts_by_period = []
+    
+    # Cache for standard work hours by date (to avoid repeated API calls)
+    standard_work_hours_cache: Dict[date, float] = {}
+    
+    def get_standard_work_hours_for_date_obj(date_obj: date) -> float:
+        """Get standard work hours for a specific date, using cache if available."""
+        if date_obj in standard_work_hours_cache:
+            return standard_work_hours_cache[date_obj]
+        
+        # If a single standard_work_hours was provided, use it for all dates
+        if standard_work_hours is not None:
+            standard_work_hours_cache[date_obj] = standard_work_hours
+            return standard_work_hours
+        
+        # Try to find shift type from pre-fetched shifts_by_period
+        shift_type = None
+        for period in shifts_by_period:
+            start_date_str = period.get("start_date")
+            end_date_str = period.get("end_date")
+            period_shift_type = period.get("shift_type")
+            
+            if not start_date_str or not end_date_str or not period_shift_type:
+                continue
+            
+            try:
+                try:
+                    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                except:
+                    try:
+                        start_date = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                    except:
+                        continue
+                
+                try:
+                    end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                except:
+                    try:
+                        end_date = datetime.strptime(end_date_str, "%d-%m-%Y").date()
+                    except:
+                        continue
+                
+                if start_date <= date_obj <= end_date:
+                    shift_type = period_shift_type
+                    break
+            except Exception:
+                continue
+        
+        # If we found a shift type, get its standard hours (with caching)
+        if shift_type:
+            if shift_type not in shift_type_cache:
+                try:
+                    base_url, _, _ = _get_base_config()
+                    headers = _build_auth_headers()
+                    
+                    shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
+                    shift_resp = requests.get(shift_url, headers=headers, timeout=10)
+                    
+                    if shift_resp.status_code == 200:
+                        shift_data = shift_resp.json()
+                        if isinstance(shift_data, dict) and "data" in shift_data:
+                            shift_doc = shift_data["data"]
+                            std_hours_raw = shift_doc.get("custom_standard_work_hours")
+                            
+                            if std_hours_raw is not None:
+                                try:
+                                    if isinstance(std_hours_raw, (int, float)):
+                                        std_hours_str = _float_hours_to_hhmm(float(std_hours_raw))
+                                    elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
+                                        try:
+                                            float_val = float(std_hours_raw)
+                                            std_hours_str = _float_hours_to_hhmm(float_val)
+                                        except ValueError:
+                                            std_hours_str = std_hours_raw.strip()
+                                    else:
+                                        std_hours_str = None
+                                    
+                                    if std_hours_str:
+                                        shift_type_cache[shift_type] = hhmm_to_decimal(std_hours_str)
+                                    else:
+                                        shift_type_cache[shift_type] = None
+                                except Exception:
+                                    shift_type_cache[shift_type] = None
+                            else:
+                                shift_type_cache[shift_type] = None
+                        else:
+                            shift_type_cache[shift_type] = None
+                    else:
+                        shift_type_cache[shift_type] = None
+                except Exception as e:
+                    print(f"Error fetching shift type {shift_type}: {e}")
+                    shift_type_cache[shift_type] = None
+            
+            cached_hours = shift_type_cache.get(shift_type)
+            if cached_hours is not None:
+                standard_work_hours_cache[date_obj] = cached_hours
+                return cached_hours
+        
+        # Fallback to default shift hours or 8.0
+        fallback_hours = default_shift_hours if default_shift_hours is not None else 8.0
+        standard_work_hours_cache[date_obj] = fallback_hours
+        return fallback_hours
     
     # Create a mapping of edited dates if provided
     edited_dates_map = {}
@@ -536,6 +669,9 @@ def generate_frappe_records_from_ngtecho_csv(
         # Check if weekend/holiday
         is_weekend_holiday, holiday_type = is_weekend_or_holiday(date_obj, calendar_events)
         
+        # Get date-specific standard work hours
+        date_specific_standard_hours = get_standard_work_hours_for_date_obj(date_obj)
+        
         # Determine attendance status
         work_hours = None
         if in_time and out_time:
@@ -544,7 +680,7 @@ def generate_frappe_records_from_ngtecho_csv(
             ) if multiply_sunday_hours else hhmm_to_decimal(compute_work_duration(in_time, out_time))
         
         attendance_status, leave_type = determine_attendance_status(
-            in_time, out_time, work_hours, standard_work_hours,
+            in_time, out_time, work_hours, date_specific_standard_hours,
             is_weekend_holiday, holiday_type, note,
             user_selected_sick_dates=user_selected_sick_dates,
             user_selected_holiday_dates=user_selected_holiday_dates,

@@ -137,7 +137,98 @@ def main():
             st.warning(f"Could not load time configuration from Frappe for {employee_code}: {e}")
             frappe_config = {}
 
-    std_default = normalize_time_value(frappe_config.get("standard_work_hours"), "08:00")
+    # Get standard work hours from custom_shifts_by_period for the start_date
+    # Find the period that contains start_date, or the most recent period before start_date
+    std_default_from_period = None
+    if employee_code and start_date:
+        try:
+            from frappe_client import fetch_employee_shifts_by_period, _get_base_config, _build_auth_headers, _float_hours_to_hhmm
+            import requests
+            
+            shifts_by_period = fetch_employee_shifts_by_period(employee_code)
+            
+            if shifts_by_period:
+                # Find the period that contains start_date, or the most recent period before start_date
+                matching_period = None
+                most_recent_before = None
+                most_recent_end_date = None
+                
+                for period in shifts_by_period:
+                    start_date_str = period.get("start_date")
+                    end_date_str = period.get("end_date")
+                    shift_type = period.get("shift_type")
+                    
+                    if not start_date_str or not end_date_str or not shift_type:
+                        continue
+                    
+                    try:
+                        try:
+                            period_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                        except:
+                            try:
+                                period_start = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                            except:
+                                continue
+                        
+                        try:
+                            period_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                        except:
+                            try:
+                                period_end = datetime.strptime(end_date_str, "%d-%m-%Y").date()
+                            except:
+                                continue
+                        
+                        # Check if start_date falls within this period
+                        if period_start <= start_date <= period_end:
+                            matching_period = period
+                            break
+                        
+                        # Track the most recent period that ends before start_date
+                        if period_end < start_date:
+                            if most_recent_end_date is None or period_end > most_recent_end_date:
+                                most_recent_end_date = period_end
+                                most_recent_before = period
+                    except Exception:
+                        continue
+                
+                # Use matching period if found, otherwise use most recent period before start_date
+                selected_period = matching_period if matching_period else most_recent_before
+                
+                if selected_period:
+                    shift_type = selected_period.get("shift_type")
+                    if shift_type:
+                        try:
+                            base_url, _, _ = _get_base_config()
+                            headers = _build_auth_headers()
+                            
+                            shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
+                            shift_resp = requests.get(shift_url, headers=headers, timeout=10)
+                            
+                            if shift_resp.status_code == 200:
+                                shift_data = shift_resp.json()
+                                if isinstance(shift_data, dict) and "data" in shift_data:
+                                    shift_doc = shift_data["data"]
+                                    std_hours_raw = shift_doc.get("custom_standard_work_hours")
+                                    
+                                    if std_hours_raw is not None:
+                                        try:
+                                            if isinstance(std_hours_raw, (int, float)):
+                                                std_default_from_period = _float_hours_to_hhmm(float(std_hours_raw))
+                                            elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
+                                                try:
+                                                    float_val = float(std_hours_raw)
+                                                    std_default_from_period = _float_hours_to_hhmm(float_val)
+                                                except ValueError:
+                                                    std_default_from_period = std_hours_raw.strip()
+                                        except Exception:
+                                            pass
+                        except Exception as e:
+                            print(f"Error fetching shift type {shift_type}: {e}")
+        except Exception as e:
+            print(f"Warning: Could not fetch shifts_by_period for {employee_code}: {e}")
+    
+    # Use period-based value if found, otherwise fallback to default_shift value
+    std_default = normalize_time_value(std_default_from_period or frappe_config.get("standard_work_hours"), "08:00")
     overtime_default = normalize_time_value(frappe_config.get("initial_overtime"), "00:00")
     holiday_default = normalize_time_value(frappe_config.get("initial_holiday_hours"), "00:00")
 
@@ -330,7 +421,125 @@ def main():
             )
             df.loc[sick_leave_mask, "Holiday"] = "sick"
             df["Break"] = None
-            df["Standard Time"] = decimal_hours_to_hhmmss(standard_work_hours)
+            
+            # Helper function to convert date values to date objects
+            def get_date_obj(date_val):
+                """Convert various date formats to date object"""
+                if isinstance(date_val, date):
+                    return date_val
+                elif isinstance(date_val, pd.Timestamp):
+                    return date_val.date()
+                elif isinstance(date_val, str):
+                    return pd.to_datetime(date_val).date()
+                else:
+                    # Try to convert using pd.to_datetime
+                    return pd.to_datetime(date_val).date()
+            
+            # Use date-specific standard work hours from custom_shifts_by_period
+            # Pre-fetch shifts_by_period once to avoid repeated API calls
+            from frappe_client import fetch_employee_shifts_by_period, _get_base_config, _build_auth_headers, _float_hours_to_hhmm
+            import requests
+            
+            shifts_by_period = []
+            shift_type_cache: Dict[str, Optional[str]] = {}  # Cache shift type -> standard hours (HH:MM format)
+            default_shift_hours_str: Optional[str] = None
+            
+            try:
+                shifts_by_period = fetch_employee_shifts_by_period(employee_code)
+                
+                # Pre-fetch default shift hours as fallback
+                try:
+                    time_config = fetch_employee_time_config(employee_code, report_start_date=start_date)
+                    default_shift_hours_str = time_config.get('standard_work_hours')
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Warning: Could not fetch shifts_by_period for {employee_code}: {e}")
+                shifts_by_period = []
+            
+            def get_standard_time_for_date(date_val):
+                """Get standard work hours for a specific date, using cache."""
+                try:
+                    date_obj = get_date_obj(date_val)
+                    
+                    # Try to find shift type from pre-fetched shifts_by_period
+                    shift_type = None
+                    for period in shifts_by_period:
+                        start_date_str = period.get("start_date")
+                        end_date_str = period.get("end_date")
+                        period_shift_type = period.get("shift_type")
+                        
+                        if not start_date_str or not end_date_str or not period_shift_type:
+                            continue
+                        
+                        try:
+                            try:
+                                period_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                            except:
+                                try:
+                                    period_start = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                                except:
+                                    continue
+                            
+                            try:
+                                period_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                            except:
+                                try:
+                                    period_end = datetime.strptime(end_date_str, "%d-%m-%Y").date()
+                                except:
+                                    continue
+                            
+                            if period_start <= date_obj <= period_end:
+                                shift_type = period_shift_type
+                                break
+                        except Exception:
+                            continue
+                    
+                    # If we found a shift type, get its standard hours (with caching)
+                    if shift_type:
+                        if shift_type not in shift_type_cache:
+                            try:
+                                base_url, _, _ = _get_base_config()
+                                headers = _build_auth_headers()
+                                
+                                shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
+                                shift_resp = requests.get(shift_url, headers=headers, timeout=10)
+                                
+                                if shift_resp.status_code == 200:
+                                    shift_data = shift_resp.json()
+                                    if isinstance(shift_data, dict) and "data" in shift_data:
+                                        shift_doc = shift_data["data"]
+                                        std_hours_raw = shift_doc.get("custom_standard_work_hours")
+                                        
+                                        if std_hours_raw is not None:
+                                            try:
+                                                if isinstance(std_hours_raw, (int, float)):
+                                                    shift_type_cache[shift_type] = _float_hours_to_hhmm(float(std_hours_raw))
+                                                elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
+                                                    try:
+                                                        float_val = float(std_hours_raw)
+                                                        shift_type_cache[shift_type] = _float_hours_to_hhmm(float_val)
+                                                    except ValueError:
+                                                        shift_type_cache[shift_type] = std_hours_raw.strip()
+                                            except Exception:
+                                                shift_type_cache[shift_type] = None
+                            except Exception as e:
+                                print(f"Error fetching shift type {shift_type}: {e}")
+                                shift_type_cache[shift_type] = None
+                        
+                        cached_hours_str = shift_type_cache.get(shift_type)
+                        if cached_hours_str:
+                            return cached_hours_str
+                    
+                    # Fallback to default shift hours or input value
+                    if default_shift_hours_str:
+                        return default_shift_hours_str
+                    return decimal_hours_to_hhmmss(standard_work_hours)
+                except Exception as e:
+                    # Fallback to the input value on error
+                    return decimal_hours_to_hhmmss(standard_work_hours)
+            
+            df["Standard Time"] = df["Date"].apply(get_standard_time_for_date)
             df["Difference"] = None
             df["Difference (Decimal)"] = None
             # Initialize Multiplication to 1.0 for all rows first
@@ -343,17 +552,6 @@ def main():
             # Public Holidays are in calendar_events_date
             # Saturdays should always be 1.0, even if they're public holidays
             # Use vectorized operations for better performance and reliability
-            def get_date_obj(date_val):
-                """Convert various date formats to date object"""
-                if isinstance(date_val, date):
-                    return date_val
-                elif isinstance(date_val, pd.Timestamp):
-                    return date_val.date()
-                elif isinstance(date_val, str):
-                    return pd.to_datetime(date_val).date()
-                else:
-                    # Try to convert using pd.to_datetime
-                    return pd.to_datetime(date_val).date()
             
             # Convert all dates to date objects for comparison
             df_dates = df["Date"].apply(get_date_obj)

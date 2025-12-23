@@ -228,20 +228,14 @@ def main():
                         get_username_by_full_name = csv_converter.get_username_by_full_name
                         employee_username = get_username_by_full_name(employee_full_name)
                         
-                        # Fetch standard work hours from Frappe HR to show user
-                        try:
-                            fetched_standard_hours = fetch_employee_standard_work_hours(employee_username)
-                            from utils import decimal_hours_to_hhmmss
-                            standard_hours_str = decimal_hours_to_hhmmss(fetched_standard_hours)
-                            st.info(f"ℹ️ Using standard work hours: **{standard_hours_str}** (fetched from Frappe HR: Employee > Default Shift > Shift Type > custom_standard_work_hours)")
-                        except Exception as e:
-                            st.warning(f"⚠️ Could not fetch standard work hours from Frappe HR: {str(e)}. Using default 8.0 hours.")
-                            fetched_standard_hours = 8.0
+                        # Note: We pass None for standard_work_hours to enable date-specific shift type support
+                        # The function will fetch date-specific standard work hours from custom_shifts_by_period
+                        st.info(f"ℹ️ Using date-specific standard work hours from Frappe HR (Employee > custom_shifts_by_period > Shift Type > custom_standard_work_hours). If no period matches, will use default shift.")
                         
                         # Generate records using edited IN/OUT times
                         checkin_df, attendance_df = generate_frappe_records_from_ngtecho_csv(
                             csv_file_path=tmp_path,
-                            standard_work_hours=fetched_standard_hours,  # Use fetched value from Frappe HR
+                            standard_work_hours=None,  # Pass None to enable date-specific shift type support
                             auto_detect_weekends_holidays=False,  # Default: disabled
                             multiply_sunday_hours=False,  # Default: disabled
                             user_selected_sick_dates=sick_dates,
