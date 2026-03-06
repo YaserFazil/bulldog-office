@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 from streamlit_extras.switch_page_button import switch_page
 
+from employee_manager import fetch_overtime_payouts
 from frappe_client import (
     fetch_employee_checkins,
     build_daily_checkins_from_employee_checkins,
@@ -29,6 +30,61 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+
+
+def _sum_payout_hours(payout_records):
+    total_hours = 0.0
+    for payout in payout_records:
+        payout_hours = payout.get("payout_hours")
+        if payout_hours:
+            total_hours += hhmm_to_decimal(str(payout_hours))
+    return total_hours
+
+
+def _apply_overtime_payout_deductions(df, payout_records):
+    df = df.copy()
+    df["Overt. Paid"] = ""
+    df["Payout Date"] = ""
+
+    if df.empty or not payout_records:
+        return df
+
+    payout_hours_by_date = {}
+    payout_notes_by_date = {}
+    for payout in payout_records:
+        payout_date = payout.get("payout_date")
+        if payout_date is None:
+            continue
+
+        payout_hours_decimal = hhmm_to_decimal(str(payout.get("payout_hours") or "00:00"))
+        payout_hours_by_date[payout_date] = payout_hours_by_date.get(payout_date, 0.0) + payout_hours_decimal
+
+        payout_note = str(payout.get("note") or "").strip()
+        if payout_note:
+            payout_notes_by_date.setdefault(payout_date, []).append(payout_note)
+
+    running_paid_out = 0.0
+    for idx, row in df.iterrows():
+        row_date = row.get("Date")
+        if isinstance(row_date, pd.Timestamp):
+            row_date = row_date.date()
+        elif isinstance(row_date, str):
+            row_date = pd.to_datetime(row_date).date()
+
+        payout_today = payout_hours_by_date.get(row_date, 0.0)
+        if payout_today:
+            df.at[idx, "Overt. Paid"] = decimal_hours_to_hhmmss(payout_today)
+            payout_label = row_date.isoformat()
+            payout_notes = payout_notes_by_date.get(row_date, [])
+            if payout_notes:
+                payout_label = f"{payout_label} ({'; '.join(payout_notes)})"
+            df.at[idx, "Payout Date"] = payout_label
+
+        running_paid_out += payout_today
+        current_balance = hhmm_to_decimal(str(row.get("Hours Overtime Left") or "00:00"))
+        df.at[idx, "Hours Overtime Left"] = decimal_hours_to_hhmmss(current_balance - running_paid_out)
+
+    return df
 
 
 def main():
@@ -227,9 +283,22 @@ def main():
         except Exception as e:
             print(f"Warning: Could not fetch shifts_by_period for {employee_code}: {e}")
     
+    all_payouts_until_end = fetch_overtime_payouts(employee_code=employee_code, end_date=end_date) if employee_code else []
+    prior_period_payouts = [
+        payout for payout in all_payouts_until_end
+        if payout.get("payout_date") and payout["payout_date"] < start_date
+    ]
+    in_period_payouts = [
+        payout for payout in all_payouts_until_end
+        if payout.get("payout_date") and start_date <= payout["payout_date"] <= end_date
+    ]
+
     # Use period-based value if found, otherwise fallback to default_shift value
     std_default = normalize_time_value(std_default_from_period or frappe_config.get("standard_work_hours"), "08:00")
-    overtime_default = normalize_time_value(frappe_config.get("initial_overtime"), "00:00")
+    overtime_default_raw = normalize_time_value(frappe_config.get("initial_overtime"), "00:00")
+    overtime_default = decimal_hours_to_hhmmss(
+        hhmm_to_decimal(overtime_default_raw) - _sum_payout_hours(prior_period_payouts)
+    )
     holiday_default = normalize_time_value(frappe_config.get("initial_holiday_hours"), "00:00")
 
     col3, col4, col5 = st.columns(3)
@@ -241,7 +310,7 @@ def main():
         standard_work_hours = hhmm_to_decimal(standard_work_hours_str)
     with col4:
         initial_overtime_str = st.text_input(
-            "Initial Overtime Balance",
+            "Initial Overtime Balance (after earlier payouts)",
             value=overtime_default,
         )
     with col5:
@@ -624,6 +693,7 @@ def main():
                 holiday_hours,
                 initial_overtime_str,
             )
+            df = _apply_overtime_payout_deductions(df, in_period_payouts)
 
             # Re-verify and fix Multiplication after compute_running_holiday_hours
             # This ensures Multiplication is always correct, even if something went wrong
@@ -750,6 +820,12 @@ def main():
             # Convert HH:MM to days based on standard work hours per day
             total_available_time_off_days = total_available_time_off_decimal / standard_work_hours
             total_available_time_off_days_str = f"{total_available_time_off_days:.2f}"
+            total_paid_out_in_period_str = decimal_hours_to_hhmmss(_sum_payout_hours(in_period_payouts))
+            last_payout_date = max(
+                (payout["payout_date"] for payout in in_period_payouts if payout.get("payout_date")),
+                default=None,
+            )
+            last_payout_date_str = last_payout_date.isoformat() if last_payout_date else "-"
             
             summary_data = [
                 ["Metric", "Value", "What This Means"],
@@ -758,6 +834,8 @@ def main():
                 ["Hours worked", hours_worked_str, "Total hours you actually worked (sum of all 'Work Time' entries)"],
                 ["Hours expected", hours_expected_str, "Total hours you were expected to work (sum of all 'Standard Time' entries, excluding holidays)"],
                 ["Overtime/Undertime Balance", overtime_balance_str, "Your current overtime balance. Positive = overtime earned, Negative = undertime owed"],
+                ["Overt. Paid", total_paid_out_in_period_str, "Total overtime hours that were paid out during the selected period"],
+                ["Last Payout Date", last_payout_date_str, "The most recent overtime payout date inside the selected report period"],
                 ["Remaining Holiday Hours", holiday_hours_str, "Your remaining paid holiday hours that you can use"],
                 ["Total Sick Days", str(sick_days_count), "Number of days marked as sick leave in this period"],
                 ["Total Available Time Off (HH:MM)", total_available_time_off_hhmm, "Combined hours of holiday time + overtime that you can use for time off"],
@@ -792,6 +870,7 @@ def main():
                 "Holiday",
                 "Holiday Hours",
                 "Hours Overtime Left",
+                "Overt. Paid",
                 "IN",
                 "OUT",
                 "Standard Time",
@@ -838,10 +917,40 @@ def main():
                             ("BACKGROUND", (out_col_idx, row_idx), (out_col_idx, row_idx), colors.yellow)
                         )
             
-            data_table = Table(table_data, repeatRows=1)
+            detailed_col_widths = [55, 55, 42, 36, 160, 65, 89, 59, 38, 38, 60, 60, 48]
+            data_table = Table(table_data, colWidths=detailed_col_widths, repeatRows=1)
             data_table.setStyle(TableStyle(table_style_commands))
             elements.append(data_table)
             elements.append(PageBreak())
+
+            if in_period_payouts:
+                elements.append(Paragraph("OVERTIME PAYOUTS", header_style))
+                elements.append(Spacer(1, 20))
+
+                payout_table_data = [["Payout Date", "Paid-Out Hours", "Note"]]
+                for payout in sorted(in_period_payouts, key=lambda item: item.get("payout_date")):
+                    payout_date_value = payout.get("payout_date")
+                    payout_table_data.append([
+                        payout_date_value.isoformat() if payout_date_value else "",
+                        str(payout.get("payout_hours") or "00:00"),
+                        str(payout.get("note") or ""),
+                    ])
+
+                payout_table = Table(payout_table_data, colWidths=[140, 140, 440], repeatRows=1)
+                payout_table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9b59b6")),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bdc3c7")),
+                            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f6fa")]),
+                        ]
+                    )
+                )
+                elements.append(payout_table)
+                elements.append(PageBreak())
 
             # -- Detailed Explanation Pages --
             elements.append(Paragraph("📋 COMPLETE REPORT EXPLANATION", header_style))
@@ -882,6 +991,10 @@ def main():
                 "",
                 "💰 <b>Overtime or Undertime Balance:</b> This shows your current overtime balance. A positive number means you've worked extra hours that you can use as time off. A negative number means you owe hours to the company.",
                 "",
+                "💸 <b>Overt. Paid:</b> The total overtime hours that were already paid out during this report period.",
+                "",
+                "🗓️ <b>Last Payout Date:</b> The most recent overtime payout date inside the selected report period.",
+                "",
                 "🏖️ <b>Remaining Holiday Hours:</b> Your remaining paid holiday hours that you can use for vacation or other time off.",
                 "",
                 "🏥 <b>Total Sick Days:</b> The number of days in this period that were marked as sick leave.",
@@ -916,6 +1029,8 @@ def main():
                 "🏖️ <b>Holiday Hours:</b> Your running balance of remaining holiday hours after this date.",
                 "",
                 "💰 <b>Hours Overtime Left:</b> Your running balance of overtime hours after this date.",
+                "",
+                "💸 <b>Overt. Paid:</b> Any overtime hours paid out on that specific date.",
                 "",
                 "🕐 <b>IN:</b> Your check-in time for the day.",
                 "",
@@ -964,6 +1079,7 @@ def main():
                 "   • Positive overtime hours accumulate when you work more than standard time",
                 "   • Work on Sundays and public holidays is multiplied by 2.0 and added to overtime",
                 "   • These can be used for time off or paid out",
+                "   • Paid-out overtime is deducted starting from the payout date",
                 "   • The running balance is shown in the 'Hours Overtime Left' column",
                 "",
                 "📈 <b>Available Time Off:</b>",
@@ -1005,7 +1121,7 @@ def main():
                 "",
                 "📋 <b>Data Source:</b>",
                 "   This report is generated from Frappe HR Attendance and Employee Checkin records.",
-                "   All data is automatically synchronized from your Frappe HR system."
+                "   Recorded overtime payouts are loaded from Bulldog Office MongoDB storage and applied from their payout dates."
             ]
             
             for explanation in understanding_explanations:
