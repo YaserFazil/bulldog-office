@@ -173,7 +173,10 @@ def main():
             import inspect
             sig = inspect.signature(fetch_employee_time_config)
             if 'report_start_date' in sig.parameters:
-                frappe_config = fetch_employee_time_config(employee_code, report_start_date=start_date)
+                kwargs = {"report_start_date": start_date}
+                if "report_end_date" in sig.parameters:
+                    kwargs["report_end_date"] = end_date
+                frappe_config = fetch_employee_time_config(employee_code, **kwargs)
             else:
                 # Fallback for cached old version - call without the parameter
                 frappe_config = fetch_employee_time_config(employee_code)
@@ -518,7 +521,11 @@ def main():
                 
                 # Pre-fetch default shift hours as fallback
                 try:
-                    time_config = fetch_employee_time_config(employee_code, report_start_date=start_date)
+                    time_config = fetch_employee_time_config(
+                        employee_code,
+                        report_start_date=start_date,
+                        report_end_date=end_date,
+                    )
                     default_shift_hours_str = time_config.get('standard_work_hours')
                 except Exception:
                     pass

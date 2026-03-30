@@ -363,7 +363,11 @@ def get_standard_work_hours_for_date(employee_code: str, target_date: date) -> O
     return None
 
 
-def fetch_employee_time_config(employee_code: str, report_start_date: Optional[date] = None) -> Dict[str, Optional[str]]:
+def fetch_employee_time_config(
+    employee_code: str,
+    report_start_date: Optional[date] = None,
+    report_end_date: Optional[date] = None,
+) -> Dict[str, Optional[str]]:
     """
     Fetch per-employee configuration from Frappe for:
       - standard work hours per day (from Employee's default_shift -> Shift Type's "Standard Work Hours" field)
@@ -375,6 +379,10 @@ def fetch_employee_time_config(employee_code: str, report_start_date: Optional[d
     Field names for overtime and holiday hours can be configured via environment variables:
       - FRAPPE_INIT_OVERTIME_FIELD  (default: "initial_overtime_balance")
       - FRAPPE_INIT_HOLIDAY_FIELD   (default: "initial_holiday_hours")
+
+    Optional report_end_date: when set with report_start_date, holiday balance from
+    custom_initial_holiday_hours includes every allocation year up to max(start year, end year),
+    so cross-year PDF ranges include all relevant annual pots.
     """
     base_url, _, _ = _get_base_config()
 
@@ -501,6 +509,7 @@ def fetch_employee_time_config(employee_code: str, report_start_date: Optional[d
                     holiday_hours_table=holiday_hours_table,
                     standard_work_hours_hhmm=standard_work_hours or "08:00",
                     before_date=report_start_date,
+                    report_end_date=report_end_date,
                 )
                 
                 # Update the custom_holiday_hours_balance field in Employee DocType
@@ -1048,6 +1057,7 @@ def calculate_holiday_hours_balance_from_table(
     holiday_hours_table: List[Dict],
     standard_work_hours_hhmm: str = "08:00",
     before_date: Optional[date] = None,
+    report_end_date: Optional[date] = None,
 ) -> str:
     """
     Calculate holiday hours balance from the custom_initial_holiday_hours table.
@@ -1061,6 +1071,8 @@ def calculate_holiday_hours_balance_from_table(
         holiday_hours_table: List of dicts from custom_initial_holiday_hours table
         standard_work_hours_hhmm: Standard work hours per day
         before_date: Calculate balance up to (but not including) this date
+        report_end_date: If set with before_date, allocation years through
+            max(before_date.year, report_end_date.year) are included in the total
     
     Returns:
         Total remaining holiday hours balance in HH:MM format
@@ -1122,8 +1134,16 @@ def calculate_holiday_hours_balance_from_table(
     
     attendance_records = data["data"]
     
-    # Scenario 5: If no data before date range, get allocation for the year of start date
+    # Scenario 5: If no leave data before report start, only table allocations apply (used = 0).
+    # When report_end_date is set, sum allocations for every calendar year in the report span.
     if not attendance_records and before_date:
+        if report_end_date is not None:
+            y_lo = min(before_date.year, report_end_date.year)
+            y_hi = max(before_date.year, report_end_date.year)
+            total_alloc = sum(
+                allocations_by_year.get(y, 0.0) for y in range(y_lo, y_hi + 1)
+            )
+            return decimal_hours_to_hhmmss(total_alloc) if total_alloc > 0 else "00:00"
         start_year = before_date.year
         if start_year in allocations_by_year:
             return decimal_hours_to_hhmmss(allocations_by_year[start_year])
@@ -1194,14 +1214,20 @@ def calculate_holiday_hours_balance_from_table(
         except Exception as e:
             continue
     
-    # Calculate balance per year (initial - used) for all years with allocations
-    # Only consider years up to and including the before_date year (if provided)
-    # This ensures we don't include future year allocations that haven't been used yet
+    # Calculate balance per year (initial - used) for all years with allocations.
+    # Include every allocation year up through max(report start year, report end year) when both are set,
+    # so cross-year reports pick up each year's pot (e.g. Dec 2025 – Mar 2026 includes 2025 and 2026).
     total_balance = 0.0
-    max_year = before_date.year if before_date else None
+    if before_date and report_end_date:
+        max_year = max(before_date.year, report_end_date.year)
+    elif before_date:
+        max_year = before_date.year
+    elif report_end_date:
+        max_year = report_end_date.year
+    else:
+        max_year = None
     
     for year, initial_hours in allocations_by_year.items():
-        # Only consider years up to and including the before_date year
         if max_year is not None and year > max_year:
             continue
             
