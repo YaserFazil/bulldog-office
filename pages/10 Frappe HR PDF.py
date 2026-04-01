@@ -14,6 +14,7 @@ from frappe_client import (
     fetch_employee_time_config,
     fetch_employee_attendance,
     build_daily_rows_from_attendance_and_checkins,
+    fetch_holiday_year_balances_for_report,
 )
 from utils import (
     decimal_hours_to_hhmmss,
@@ -693,12 +694,31 @@ def main():
                 df.loc[valid_holiday_mask, "Date"].apply(lambda d: d.strftime("%Y-%m-%d"))
             )
 
+            std_hhmm_for_holiday = decimal_hours_to_hhmmss(standard_work_hours)
+            holiday_year_meta = None
+            try:
+                holiday_year_meta = fetch_holiday_year_balances_for_report(
+                    employee_code,
+                    start_date,
+                    end_date,
+                    std_hhmm_for_holiday,
+                )
+            except Exception:
+                holiday_year_meta = None
+
+            h_alloc = None
+            h_bal = None
+            if holiday_year_meta:
+                h_alloc, h_bal = holiday_year_meta
+
             df = compute_running_holiday_hours(
                 df,
                 holiday_event_dates,
                 calendar_events_date,
                 holiday_hours,
                 initial_overtime_str,
+                holiday_allocations_by_year=h_alloc,
+                holiday_balance_by_year_at_report_start=h_bal,
             )
             df = _apply_overtime_payout_deductions(df, in_period_payouts)
 

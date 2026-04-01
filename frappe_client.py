@@ -1052,6 +1052,180 @@ def calculate_historical_overtime_balance(
     return decimal_hours_to_hhmmss(running_overtime_balance)
 
 
+def compute_holiday_balance_by_year_at_report_start(
+    employee_code: str,
+    holiday_hours_table: List[Dict],
+    standard_work_hours_hhmm: str = "08:00",
+    before_date: Optional[date] = None,
+    report_end_date: Optional[date] = None,
+) -> Tuple[Dict[int, float], Dict[int, float]]:
+    """
+    Per-year allocation and remaining holiday hours at report start (before before_date),
+    using the same rules as the combined total in calculate_holiday_hours_balance_from_table.
+
+    Returns:
+        (allocations_by_year_in_scope, balance_by_year_at_start)
+        Empty dicts if the table has no usable rows.
+    """
+    from utils import hhmm_to_decimal
+
+    allocations_by_year: Dict[int, float] = {}
+    for record in holiday_hours_table:
+        try:
+            year_str = record.get("year")
+            holiday_hours = record.get("holiday_hours")
+
+            if year_str and holiday_hours is not None:
+                try:
+                    year = int(year_str) if isinstance(year_str, str) else int(year_str)
+                    hours = float(holiday_hours)
+                    allocations_by_year[year] = hours
+                except (ValueError, TypeError):
+                    continue
+        except Exception:
+            continue
+
+    if not allocations_by_year:
+        return {}, {}
+
+    if before_date and report_end_date:
+        max_year = max(before_date.year, report_end_date.year)
+    elif before_date:
+        max_year = before_date.year
+    elif report_end_date:
+        max_year = report_end_date.year
+    else:
+        max_year = None
+
+    base_url, _, _ = _get_base_config()
+    url = f"{base_url}/api/resource/Attendance"
+    filters = [
+        ["Attendance", "employee", "=", employee_code],
+        ["Attendance", "status", "=", "On Leave"],
+    ]
+
+    if before_date:
+        filters.append(["Attendance", "attendance_date", "<", before_date.strftime("%Y-%m-%d")])
+
+    params = {
+        "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
+        "filters": json.dumps(filters),
+        "limit_page_length": 10000,
+        "order_by": "attendance_date asc",
+    }
+
+    headers = _build_auth_headers()
+    resp = requests.get(url, headers=headers, params=params, timeout=60)
+
+    if resp.status_code != 200:
+        raise FrappeClientError(
+            f"Frappe API error {resp.status_code}: {resp.text}"
+        )
+
+    data = resp.json()
+    if not isinstance(data, dict) or "data" not in data:
+        raise FrappeClientError(f"Unexpected response format from Frappe: {data}")
+
+    attendance_records = data["data"]
+    balance_by_year: Dict[int, float] = {}
+
+    # Scenario 5: no leave before report start — remaining per year is full allocation (in span)
+    if not attendance_records and before_date:
+        if report_end_date is not None:
+            y_lo = min(before_date.year, report_end_date.year)
+            y_hi = max(before_date.year, report_end_date.year)
+            for y in range(y_lo, y_hi + 1):
+                if y in allocations_by_year and (max_year is None or y <= max_year):
+                    balance_by_year[y] = allocations_by_year[y]
+        else:
+            y = before_date.year
+            if y in allocations_by_year and (max_year is None or y <= max_year):
+                balance_by_year[y] = allocations_by_year[y]
+    else:
+        from utils import load_calendar_events
+
+        calendar_events = load_calendar_events()
+        calendar_events_date = {
+            pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
+            for date_str, event in calendar_events.items()
+        }
+
+        standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
+        used_hours_by_year: Dict[int, float] = {}
+
+        for record in attendance_records:
+            try:
+                attendance_date_str = record.get("attendance_date")
+                if not attendance_date_str:
+                    continue
+
+                try:
+                    date_obj = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
+                except Exception:
+                    try:
+                        date_obj = datetime.strptime(attendance_date_str, "%d-%m-%Y").date()
+                    except Exception:
+                        continue
+
+                is_weekend = date_obj.weekday() >= 5
+                year = date_obj.year
+                leave_type = record.get("leave_type", "")
+                leave_type_str = str(leave_type).strip() if leave_type else ""
+                is_paid_holiday = leave_type_str == "Paid Holiday"
+                is_sick = leave_type_str == "Sick"
+
+                if is_paid_holiday and not is_sick and not is_weekend:
+                    if year not in used_hours_by_year:
+                        used_hours_by_year[year] = 0.0
+                    used_hours_by_year[year] += standard_hours_decimal
+            except Exception:
+                continue
+
+        for year, initial_hours in allocations_by_year.items():
+            if max_year is not None and year > max_year:
+                continue
+            used_hours = used_hours_by_year.get(year, 0.0)
+            balance_by_year[year] = initial_hours - used_hours
+
+    alloc_in_scope = {
+        y: allocations_by_year[y] for y in balance_by_year if y in allocations_by_year
+    }
+    return alloc_in_scope, balance_by_year
+
+
+def fetch_holiday_year_balances_for_report(
+    employee_code: str,
+    report_start_date: date,
+    report_end_date: date,
+    standard_work_hours_hhmm: str,
+) -> Optional[Tuple[Dict[int, float], Dict[int, float]]]:
+    """
+    Load Employee holiday child table and return per-year allocation + balance at report start.
+    Returns None if there is no custom_initial_holiday_hours table data.
+    """
+    base_url, _, _ = _get_base_config()
+    headers = _build_auth_headers()
+    emp_url = f"{base_url}/api/resource/Employee/{employee_code}"
+    resp = requests.get(emp_url, headers=headers, params={}, timeout=30)
+    if resp.status_code != 200:
+        raise FrappeClientError(
+            f"Frappe API error {resp.status_code}: {resp.text}"
+        )
+    payload = resp.json()
+    if not isinstance(payload, dict) or "data" not in payload:
+        raise FrappeClientError(f"Unexpected response format from Frappe: {payload}")
+    table = payload["data"].get("custom_initial_holiday_hours")
+    if not table or not isinstance(table, list) or len(table) == 0:
+        return None
+    return compute_holiday_balance_by_year_at_report_start(
+        employee_code=employee_code,
+        holiday_hours_table=table,
+        standard_work_hours_hhmm=standard_work_hours_hhmm,
+        before_date=report_start_date,
+        report_end_date=report_end_date,
+    )
+
+
 def calculate_holiday_hours_balance_from_table(
     employee_code: str,
     holiday_hours_table: List[Dict],
@@ -1061,11 +1235,11 @@ def calculate_holiday_hours_balance_from_table(
 ) -> str:
     """
     Calculate holiday hours balance from the custom_initial_holiday_hours table.
-    
+
     The table contains child records with:
     - year: select field (e.g., "2024", "2025")
     - holiday_hours: float field (allocated hours for that year)
-    
+
     Args:
         employee_code: Frappe Employee name/code
         holiday_hours_table: List of dicts from custom_initial_holiday_hours table
@@ -1073,170 +1247,22 @@ def calculate_holiday_hours_balance_from_table(
         before_date: Calculate balance up to (but not including) this date
         report_end_date: If set with before_date, allocation years through
             max(before_date.year, report_end_date.year) are included in the total
-    
+
     Returns:
         Total remaining holiday hours balance in HH:MM format
     """
-    from utils import hhmm_to_decimal, decimal_hours_to_hhmmss
-    
-    # Parse holiday hours allocations from table
-    allocations_by_year: Dict[int, float] = {}
-    for record in holiday_hours_table:
-        try:
-            year_str = record.get("year")
-            holiday_hours = record.get("holiday_hours")
-            
-            if year_str and holiday_hours is not None:
-                # Convert year to int (handle string like "2024" or int)
-                try:
-                    year = int(year_str) if isinstance(year_str, str) else int(year_str)
-                    hours = float(holiday_hours)
-                    allocations_by_year[year] = hours
-                except (ValueError, TypeError):
-                    continue
-        except Exception:
-            continue
-    
-    # If no allocations found, return "00:00"
-    if not allocations_by_year:
+    from utils import decimal_hours_to_hhmmss
+
+    _, balance_by_year = compute_holiday_balance_by_year_at_report_start(
+        employee_code=employee_code,
+        holiday_hours_table=holiday_hours_table,
+        standard_work_hours_hhmm=standard_work_hours_hhmm,
+        before_date=before_date,
+        report_end_date=report_end_date,
+    )
+    if not balance_by_year:
         return "00:00"
-    
-    # Fetch ALL Attendance records with "On Leave" status before the date
-    # We need to check both "Paid Holiday" leave types and other holidays
-    base_url, _, _ = _get_base_config()
-    url = f"{base_url}/api/resource/Attendance"
-    filters = [
-        ["Attendance", "employee", "=", employee_code],
-        ["Attendance", "status", "=", "On Leave"],
-    ]
-    
-    if before_date:
-        filters.append(["Attendance", "attendance_date", "<", before_date.strftime("%Y-%m-%d")])
-    
-    params = {
-        "fields": '["name", "employee", "attendance_date", "status", "leave_type"]',
-        "filters": json.dumps(filters),
-        "limit_page_length": 10000,
-        "order_by": "attendance_date asc",
-    }
-    
-    headers = _build_auth_headers()
-    resp = requests.get(url, headers=headers, params=params, timeout=60)
-    
-    if resp.status_code != 200:
-        raise FrappeClientError(
-            f"Frappe API error {resp.status_code}: {resp.text}"
-        )
-    
-    data = resp.json()
-    if not isinstance(data, dict) or "data" not in data:
-        raise FrappeClientError(f"Unexpected response format from Frappe: {data}")
-    
-    attendance_records = data["data"]
-    
-    # Scenario 5: If no leave data before report start, only table allocations apply (used = 0).
-    # When report_end_date is set, sum allocations for every calendar year in the report span.
-    if not attendance_records and before_date:
-        if report_end_date is not None:
-            y_lo = min(before_date.year, report_end_date.year)
-            y_hi = max(before_date.year, report_end_date.year)
-            total_alloc = sum(
-                allocations_by_year.get(y, 0.0) for y in range(y_lo, y_hi + 1)
-            )
-            return decimal_hours_to_hhmmss(total_alloc) if total_alloc > 0 else "00:00"
-        start_year = before_date.year
-        if start_year in allocations_by_year:
-            return decimal_hours_to_hhmmss(allocations_by_year[start_year])
-        else:
-            return "00:00"  # No allocation for that year
-    
-    # Load calendar events to check for public holidays
-    # This ensures we don't count "Paid Holiday" records on public holidays (they're free)
-    from utils import load_calendar_events
-    calendar_events = load_calendar_events()
-    calendar_events_date = {
-        pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
-        for date_str, event in calendar_events.items()
-    }
-    
-    # Group attendance by year and calculate used hours per year
-    standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
-    used_hours_by_year: Dict[int, float] = {}
-    
-    # Debug: Track what we're counting
-    debug_paid_holidays = []
-    
-    for record in attendance_records:
-        try:
-            attendance_date_str = record.get("attendance_date")
-            if not attendance_date_str:
-                continue
-            
-            # Parse date (Frappe format: YYYY-MM-DD or DD-MM-YYYY)
-            try:
-                date_obj = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
-            except:
-                try:
-                    date_obj = datetime.strptime(attendance_date_str, "%d-%m-%Y").date()
-                except:
-                    continue
-            
-            # Check if this date is a public holiday (from calendar events)
-            is_public_holiday = date_obj in calendar_events_date
-            
-            # Check if this date is a weekend (Saturday=5, Sunday=6)
-            is_weekend = date_obj.weekday() >= 5
-            
-            year = date_obj.year
-            leave_type = record.get("leave_type", "")
-            
-            # Only count "Paid Holiday" leave type
-            # Explicitly exclude:
-            # 1. "Sick" leave types (sick days should NOT deduct from holiday hours)
-            # 2. Weekends (weekends are free, even if mistakenly marked as "Paid Holiday")
-            # This matches the logic in compute_running_holiday_hours where weekends don't deduct
-            leave_type_str = str(leave_type).strip() if leave_type else ""
-            is_paid_holiday = leave_type_str == "Paid Holiday"
-            is_sick = leave_type_str == "Sick"
-            
-            if is_paid_holiday and not is_sick and not is_weekend:
-                if year not in used_hours_by_year:
-                    used_hours_by_year[year] = 0.0
-                used_hours_by_year[year] += standard_hours_decimal
-                debug_paid_holidays.append({
-                    "date": date_obj.isoformat(),
-                    "leave_type": leave_type_str,
-                    "is_public_holiday": is_public_holiday,
-                    "is_weekend": is_weekend,
-                    "year": year,
-                    "hours": standard_hours_decimal
-                })
-        except Exception as e:
-            continue
-    
-    # Calculate balance per year (initial - used) for all years with allocations.
-    # Include every allocation year up through max(report start year, report end year) when both are set,
-    # so cross-year reports pick up each year's pot (e.g. Dec 2025 – Mar 2026 includes 2025 and 2026).
-    total_balance = 0.0
-    if before_date and report_end_date:
-        max_year = max(before_date.year, report_end_date.year)
-    elif before_date:
-        max_year = before_date.year
-    elif report_end_date:
-        max_year = report_end_date.year
-    else:
-        max_year = None
-    
-    for year, initial_hours in allocations_by_year.items():
-        if max_year is not None and year > max_year:
-            continue
-            
-        used_hours = used_hours_by_year.get(year, 0.0)
-        balance = initial_hours - used_hours
-        total_balance += balance
-    
-    # Convert to HH:MM format
-    return decimal_hours_to_hhmmss(total_balance)
+    return decimal_hours_to_hhmmss(sum(balance_by_year.values()))
 
 
 def calculate_holiday_hours_balance_per_year(

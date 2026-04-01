@@ -135,10 +135,24 @@ def is_valid_holiday(value):
 # ----------------------
 # 7. New Helper: Compute a running holiday balance row-by-row
 # ----------------------
-def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_hours_count, initial_overtime="00:00"):
+def compute_running_holiday_hours(
+    df,
+    holiday_dates,
+    official_holidays,
+    holiday_hours_count,
+    initial_overtime="00:00",
+    holiday_allocations_by_year=None,
+    holiday_balance_by_year_at_report_start=None,
+):
     # Ensure DataFrame is sorted by Date ascending.
     df_sorted = df.sort_values(by="Date").copy()
-    
+
+    use_per_year_holiday_buckets = (
+        holiday_allocations_by_year is not None
+        and holiday_balance_by_year_at_report_start is not None
+        and len(holiday_balance_by_year_at_report_start) > 0
+    )
+
     # Initialize running_overtime based on initial_overtime
     if initial_overtime != "00:00":
         running_overtime = hhmm_to_decimal(initial_overtime)
@@ -146,11 +160,12 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         # Start with 0 when initial_overtime is "00:00"
         # The first row will be processed normally and its worked hours (with multiplication) will be added
         running_overtime = 0.0
-    
+
     overtime_list = []
     holiday_hours_list = []
     remaining_holiday_hours = holiday_hours_count if holiday_hours_count else 0  # Initialize holiday hours count
     remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
+    prev_calendar_year = None
     # Process each row in chronological order.
     for idx, row in df_sorted.iterrows():
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
@@ -164,7 +179,27 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
             running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         else:
             running_overtime_str = "00:00"
-        
+
+        if use_per_year_holiday_buckets:
+            if prev_calendar_year is None:
+                remaining_holiday_hours = float(
+                    holiday_balance_by_year_at_report_start.get(
+                        row_date_obj.year,
+                        holiday_allocations_by_year.get(row_date_obj.year, 0.0),
+                    )
+                )
+            elif row_date_obj.year != prev_calendar_year:
+                # New calendar year: carry prior balance, then add this year's opening balance
+                # (allocation minus leave used before report start), consistent with Frappe table logic.
+                remaining_holiday_hours = remaining_holiday_hours + float(
+                    holiday_balance_by_year_at_report_start.get(
+                        row_date_obj.year,
+                        holiday_allocations_by_year.get(row_date_obj.year, 0.0),
+                    )
+                )
+            prev_calendar_year = row_date_obj.year
+            remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
+
         # If this row is a holiday event date...
         if row_date in holiday_dates or row["Holiday"] == "sick" or row["Holiday"] == "Sick":
             work_str = row["Work Time"]
@@ -217,7 +252,7 @@ def compute_running_holiday_hours(df, holiday_dates, official_holidays, holiday_
         if should_deduct:
             # Convert standard work hours to decimal for holiday hours deduction
             standard_hours = hhmm_to_decimal(row["Standard Time"])
-            remaining_holiday_hours = remaining_holiday_hours - standard_hours
+            remaining_holiday_hours = float(remaining_holiday_hours) - standard_hours
             remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
         
         holiday_hours_list.append(remaining_holiday_hours_str)
