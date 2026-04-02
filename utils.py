@@ -132,6 +132,39 @@ def load_calendar_events():
 def is_valid_holiday(value):
     return pd.notnull(value) and str(value).strip() != ''
 
+
+def holiday_opening_balance_combined_through_year(
+    holiday_balance_by_year_at_report_start,
+    holiday_allocations_by_year,
+    calendar_year: int,
+) -> float:
+    """
+    Holiday hours available at the start of rows in calendar_year: sum of each prior
+    year's balance-at-report-start plus this year's balance (matches staggered yearly
+    pools; does not pull next year's allocation in early).
+    """
+    years_union = sorted(
+        set(holiday_balance_by_year_at_report_start.keys())
+        | set(holiday_allocations_by_year.keys())
+    )
+    opening = sum(
+        float(
+            holiday_balance_by_year_at_report_start.get(
+                y, holiday_allocations_by_year.get(y, 0.0)
+            )
+        )
+        for y in years_union
+        if y < calendar_year
+    )
+    opening += float(
+        holiday_balance_by_year_at_report_start.get(
+            calendar_year,
+            holiday_allocations_by_year.get(calendar_year, 0.0),
+        )
+    )
+    return opening
+
+
 # ----------------------
 # 7. New Helper: Compute a running holiday balance row-by-row
 # ----------------------
@@ -182,11 +215,10 @@ def compute_running_holiday_hours(
 
         if use_per_year_holiday_buckets:
             if prev_calendar_year is None:
-                remaining_holiday_hours = float(
-                    holiday_balance_by_year_at_report_start.get(
-                        row_date_obj.year,
-                        holiday_allocations_by_year.get(row_date_obj.year, 0.0),
-                    )
+                remaining_holiday_hours = holiday_opening_balance_combined_through_year(
+                    holiday_balance_by_year_at_report_start,
+                    holiday_allocations_by_year,
+                    row_date_obj.year,
                 )
             elif row_date_obj.year != prev_calendar_year:
                 # New calendar year: carry prior balance, then add this year's opening balance

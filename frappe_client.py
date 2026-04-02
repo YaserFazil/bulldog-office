@@ -1129,18 +1129,17 @@ def compute_holiday_balance_by_year_at_report_start(
     attendance_records = data["data"]
     balance_by_year: Dict[int, float] = {}
 
-    # Scenario 5: no leave before report start — remaining per year is full allocation (in span)
+    # Scenario 5: no leave before report start — remaining per year is full allocation for
+    # every table year up to max_year (not only calendar years inside the report range),
+    # so a 2026-only report still gets 2025's row in balance_by_year for carry-forward.
     if not attendance_records and before_date:
-        if report_end_date is not None:
-            y_lo = min(before_date.year, report_end_date.year)
-            y_hi = max(before_date.year, report_end_date.year)
-            for y in range(y_lo, y_hi + 1):
-                if y in allocations_by_year and (max_year is None or y <= max_year):
+        if max_year is not None:
+            for y in sorted(allocations_by_year.keys()):
+                if y <= max_year:
                     balance_by_year[y] = allocations_by_year[y]
         else:
-            y = before_date.year
-            if y in allocations_by_year and (max_year is None or y <= max_year):
-                balance_by_year[y] = allocations_by_year[y]
+            for y, hours in allocations_by_year.items():
+                balance_by_year[y] = hours
     else:
         from utils import load_calendar_events
 
@@ -1253,7 +1252,7 @@ def calculate_holiday_hours_balance_from_table(
     """
     from utils import decimal_hours_to_hhmmss
 
-    _, balance_by_year = compute_holiday_balance_by_year_at_report_start(
+    alloc_in_scope, balance_by_year = compute_holiday_balance_by_year_at_report_start(
         employee_code=employee_code,
         holiday_hours_table=holiday_hours_table,
         standard_work_hours_hhmm=standard_work_hours_hhmm,
@@ -1262,6 +1261,15 @@ def calculate_holiday_hours_balance_from_table(
     )
     if not balance_by_year:
         return "00:00"
+    from utils import holiday_opening_balance_combined_through_year
+
+    if before_date:
+        opening = holiday_opening_balance_combined_through_year(
+            balance_by_year,
+            alloc_in_scope,
+            before_date.year,
+        )
+        return decimal_hours_to_hhmmss(opening)
     return decimal_hours_to_hhmmss(sum(balance_by_year.values()))
 
 
