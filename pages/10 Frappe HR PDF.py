@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 from io import BytesIO
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from streamlit_extras.switch_page_button import switch_page
 
@@ -86,6 +86,68 @@ def _apply_overtime_payout_deductions(df, payout_records):
         df.at[idx, "Hours Overtime Left"] = decimal_hours_to_hhmmss(current_balance - running_paid_out)
 
     return df
+
+
+DEFAULT_BREAK_RULE_HHMM = "06:00"
+DEFAULT_BREAK_DURATION_HHMM = "00:30"
+
+
+def _parse_shift_standard_hhmm(std_hours_raw: object, _float_hours_to_hhmm) -> Optional[str]:
+    if std_hours_raw is None:
+        return None
+    try:
+        if isinstance(std_hours_raw, (int, float)):
+            return _float_hours_to_hhmm(float(std_hours_raw))
+        if isinstance(std_hours_raw, str) and std_hours_raw.strip():
+            try:
+                return _float_hours_to_hhmm(float(std_hours_raw))
+            except ValueError:
+                return std_hours_raw.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _parse_shift_optional_nonzero_float_to_hhmm(raw: object, _float_hours_to_hhmm) -> Optional[str]:
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            v = float(raw)
+        elif isinstance(raw, str) and raw.strip():
+            v = float(raw.strip())
+        else:
+            return None
+        if v == 0:
+            return None
+        return _float_hours_to_hhmm(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_shift_daily_limit_hours(raw: object) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        v = float(raw.strip()) if isinstance(raw, str) else float(raw)
+        if v <= 0:
+            return None
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_daily_work_limit(work_time_str: object, limit_hours: Optional[float]) -> str:
+    """After break adjustment, cap credited work time at limit_hours (decimal hours)."""
+    if work_time_str is None:
+        work_time_str = ""
+    text = str(work_time_str).strip()
+    if limit_hours is None or text == "":
+        return text
+    wt = hhmm_to_decimal(text)
+    if wt <= limit_hours:
+        return text
+    return decimal_hours_to_hhmmss(limit_hours)
 
 
 def main():
@@ -508,115 +570,131 @@ def main():
                     # Try to convert using pd.to_datetime
                     return pd.to_datetime(date_val).date()
             
-            # Use date-specific standard work hours from custom_shifts_by_period
-            # Pre-fetch shifts_by_period once to avoid repeated API calls
+            # Date-specific Shift Type from custom_shifts_by_period: standard hours, optional break
+            # rules (custom_break_rule / custom_break_duration), and optional daily credit cap
+            # (custom_daily_limit) — all floats in decimal hours like custom_standard_work_hours.
             from frappe_client import fetch_employee_shifts_by_period, _get_base_config, _build_auth_headers, _float_hours_to_hhmm
             import requests
-            
-            shifts_by_period = []
-            shift_type_cache: Dict[str, Optional[str]] = {}  # Cache shift type -> standard hours (HH:MM format)
+
+            shifts_by_period: list = []
+            shift_type_cache: Dict[str, Dict[str, Any]] = {}
             default_shift_hours_str: Optional[str] = None
-            
+
             try:
                 shifts_by_period = fetch_employee_shifts_by_period(employee_code)
-                
-                # Pre-fetch default shift hours as fallback
+
                 try:
                     time_config = fetch_employee_time_config(
                         employee_code,
                         report_start_date=start_date,
                         report_end_date=end_date,
                     )
-                    default_shift_hours_str = time_config.get('standard_work_hours')
+                    default_shift_hours_str = time_config.get("standard_work_hours")
                 except Exception:
                     pass
             except Exception as e:
                 print(f"Warning: Could not fetch shifts_by_period for {employee_code}: {e}")
                 shifts_by_period = []
-            
-            def get_standard_time_for_date(date_val):
-                """Get standard work hours for a specific date, using cache."""
+
+            def resolve_shift_type_for_date(date_obj: date) -> Optional[str]:
+                for period in shifts_by_period:
+                    start_date_str = period.get("start_date")
+                    end_date_str = period.get("end_date")
+                    period_shift_type = period.get("shift_type")
+                    if not start_date_str or not end_date_str or not period_shift_type:
+                        continue
+                    try:
+                        try:
+                            period_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                        except Exception:
+                            try:
+                                period_start = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                            except Exception:
+                                continue
+                        try:
+                            period_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                        except Exception:
+                            try:
+                                period_end = datetime.strptime(end_date_str, "%d-%m-%Y").date()
+                            except Exception:
+                                continue
+                        if period_start <= date_obj <= period_end:
+                            return period_shift_type
+                    except Exception:
+                        continue
+                return None
+
+            def ensure_shift_type_cached(shift_type: str) -> None:
+                if shift_type in shift_type_cache:
+                    return
+                empty = {
+                    "standard_hhmm": None,
+                    "break_rule_hhmm": None,
+                    "break_duration_hhmm": None,
+                    "daily_limit_hours": None,
+                }
+                shift_type_cache[shift_type] = empty.copy()
+                try:
+                    base_url, _, _ = _get_base_config()
+                    headers = _build_auth_headers()
+                    shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
+                    shift_resp = requests.get(shift_url, headers=headers, timeout=10)
+                    if shift_resp.status_code != 200:
+                        return
+                    shift_data = shift_resp.json()
+                    if not isinstance(shift_data, dict) or "data" not in shift_data:
+                        return
+                    shift_doc = shift_data["data"]
+                    shift_type_cache[shift_type] = {
+                        "standard_hhmm": _parse_shift_standard_hhmm(
+                            shift_doc.get("custom_standard_work_hours"), _float_hours_to_hhmm
+                        ),
+                        "break_rule_hhmm": _parse_shift_optional_nonzero_float_to_hhmm(
+                            shift_doc.get("custom_break_rule"), _float_hours_to_hhmm
+                        ),
+                        "break_duration_hhmm": _parse_shift_optional_nonzero_float_to_hhmm(
+                            shift_doc.get("custom_break_duration"), _float_hours_to_hhmm
+                        ),
+                        "daily_limit_hours": _parse_shift_daily_limit_hours(
+                            shift_doc.get("custom_daily_limit")
+                        ),
+                    }
+                except Exception as e:
+                    print(f"Error fetching shift type {shift_type}: {e}")
+
+            def fallback_standard_str() -> str:
+                if default_shift_hours_str:
+                    return default_shift_hours_str
+                return decimal_hours_to_hhmmss(standard_work_hours)
+
+            def get_effective_shift_params_for_date(date_val) -> Tuple[str, str, str, Optional[float]]:
+                """Standard HH:MM, break rule HH:MM, break duration HH:MM, optional daily limit (hours)."""
                 try:
                     date_obj = get_date_obj(date_val)
-                    
-                    # Try to find shift type from pre-fetched shifts_by_period
-                    shift_type = None
-                    for period in shifts_by_period:
-                        start_date_str = period.get("start_date")
-                        end_date_str = period.get("end_date")
-                        period_shift_type = period.get("shift_type")
-                        
-                        if not start_date_str or not end_date_str or not period_shift_type:
-                            continue
-                        
-                        try:
-                            try:
-                                period_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                            except:
-                                try:
-                                    period_start = datetime.strptime(start_date_str, "%d-%m-%Y").date()
-                                except:
-                                    continue
-                            
-                            try:
-                                period_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-                            except:
-                                try:
-                                    period_end = datetime.strptime(end_date_str, "%d-%m-%Y").date()
-                                except:
-                                    continue
-                            
-                            if period_start <= date_obj <= period_end:
-                                shift_type = period_shift_type
-                                break
-                        except Exception:
-                            continue
-                    
-                    # If we found a shift type, get its standard hours (with caching)
-                    if shift_type:
-                        if shift_type not in shift_type_cache:
-                            try:
-                                base_url, _, _ = _get_base_config()
-                                headers = _build_auth_headers()
-                                
-                                shift_url = f"{base_url}/api/resource/Shift Type/{shift_type}"
-                                shift_resp = requests.get(shift_url, headers=headers, timeout=10)
-                                
-                                if shift_resp.status_code == 200:
-                                    shift_data = shift_resp.json()
-                                    if isinstance(shift_data, dict) and "data" in shift_data:
-                                        shift_doc = shift_data["data"]
-                                        std_hours_raw = shift_doc.get("custom_standard_work_hours")
-                                        
-                                        if std_hours_raw is not None:
-                                            try:
-                                                if isinstance(std_hours_raw, (int, float)):
-                                                    shift_type_cache[shift_type] = _float_hours_to_hhmm(float(std_hours_raw))
-                                                elif isinstance(std_hours_raw, str) and std_hours_raw.strip():
-                                                    try:
-                                                        float_val = float(std_hours_raw)
-                                                        shift_type_cache[shift_type] = _float_hours_to_hhmm(float_val)
-                                                    except ValueError:
-                                                        shift_type_cache[shift_type] = std_hours_raw.strip()
-                                            except Exception:
-                                                shift_type_cache[shift_type] = None
-                            except Exception as e:
-                                print(f"Error fetching shift type {shift_type}: {e}")
-                                shift_type_cache[shift_type] = None
-                        
-                        cached_hours_str = shift_type_cache.get(shift_type)
-                        if cached_hours_str:
-                            return cached_hours_str
-                    
-                    # Fallback to default shift hours or input value
-                    if default_shift_hours_str:
-                        return default_shift_hours_str
-                    return decimal_hours_to_hhmmss(standard_work_hours)
-                except Exception as e:
-                    # Fallback to the input value on error
-                    return decimal_hours_to_hhmmss(standard_work_hours)
-            
-            df["Standard Time"] = df["Date"].apply(get_standard_time_for_date)
+                except Exception:
+                    return (
+                        fallback_standard_str(),
+                        DEFAULT_BREAK_RULE_HHMM,
+                        DEFAULT_BREAK_DURATION_HHMM,
+                        None,
+                    )
+                st_name = resolve_shift_type_for_date(date_obj)
+                if not st_name:
+                    return (
+                        fallback_standard_str(),
+                        DEFAULT_BREAK_RULE_HHMM,
+                        DEFAULT_BREAK_DURATION_HHMM,
+                        None,
+                    )
+                ensure_shift_type_cached(st_name)
+                p = shift_type_cache.get(st_name) or {}
+                std = p.get("standard_hhmm") or fallback_standard_str()
+                br = p.get("break_rule_hhmm") or DEFAULT_BREAK_RULE_HHMM
+                bd = p.get("break_duration_hhmm") or DEFAULT_BREAK_DURATION_HHMM
+                cap = p.get("daily_limit_hours")
+                return std, br, bd, cap
+
+            df["Standard Time"] = df["Date"].apply(lambda d: get_effective_shift_params_for_date(d)[0])
             df["Difference"] = None
             df["Difference (Decimal)"] = None
             # Initialize Multiplication to 1.0 for all rows first
@@ -651,23 +729,29 @@ def main():
             # This ensures no row has Multiplication > 2.0 or < 1.0
             df["Multiplication"] = df["Multiplication"].clip(lower=1.0, upper=2.0)
 
-            # Only calculate work duration for days when employee was present or half day
+            # Daily Total = raw IN–OUT span; Work Time = after shift-specific break rules, then daily cap
             df[" Daily Total"] = df.apply(
-                lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", "")) 
-                if row.get("Status") in ["Present", "Half Day"] else "", 
-                axis=1
+                lambda row: compute_work_duration(row.get("IN", ""), row.get("OUT", ""))
+                if row.get("Status") in ["Present", "Half Day"]
+                else "",
+                axis=1,
             )
-            df["Work Time"], df["Break"] = zip(
-                *df.apply(
-                    lambda row: adjust_work_time_and_break(
-                        row[" Daily Total"],
-                        row.get("Break"),
-                        "06:00",
-                        "00:30",
-                    ) if row.get("Status") in ["Present", "Half Day"] else ("", row.get("Break")),
-                    axis=1,
+
+            def _work_time_and_break_for_row(row):
+                if row.get("Status") not in ["Present", "Half Day"]:
+                    b = row.get("Break")
+                    return "", b if b is not None else ""
+                br_rule, br_dur, cap = get_effective_shift_params_for_date(row["Date"])[1:]
+                wt, br = adjust_work_time_and_break(
+                    row[" Daily Total"],
+                    row.get("Break"),
+                    br_rule,
+                    br_dur,
                 )
-            )
+                wt_capped = _apply_daily_work_limit(wt, cap)
+                return wt_capped, br
+
+            df["Work Time"], df["Break"] = zip(*df.apply(_work_time_and_break_for_row, axis=1))
 
             df["Difference"] = df.apply(
                 lambda row: compute_time_difference(
@@ -1067,7 +1151,7 @@ def main():
                 "",
                 "📊 <b>Multiplication:</b> Any multiplier applied to your hours (e.g., 2.0 for Sunday or public holiday work).",
                 "",
-                "💼 <b>Work Time:</b> The actual hours you worked after subtracting break time."
+                "💼 <b>Work Time:</b> Hours credited for the day: time at work minus break (using your shift's break rules when set in Frappe), then capped by the shift's daily limit when configured."
             ]
             
             for explanation in work_log_explanations:
@@ -1083,8 +1167,9 @@ def main():
             
             calculation_explanations = [
                 "📊 <b>Work Time Calculation:</b>",
-                "   Work Time = Daily Total - Break Time",
-                "   Example: If you were at work for 9 hours and took 1 hour break, your Work Time = 8 hours",
+                "   Daily Total = time from IN to OUT. Break: default is 30 minutes once Daily Total reaches 6 hours;",
+                "   or your Shift Type's custom_break_rule / custom_break_duration (decimal hours) when set in Frappe.",
+                "   Work Time = Daily Total minus that break. If custom_daily_limit is set on the shift, Work Time is capped — extra time does not count toward overtime.",
                 "",
                 "💰 <b>Overtime Calculation:</b>",
                 "   Overtime = Work Time - Standard Time",
