@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 output/
 migration.log
+test.py
