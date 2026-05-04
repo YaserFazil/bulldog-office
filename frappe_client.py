@@ -653,13 +653,18 @@ def fetch_employee_time_config(
                     )
                 except Exception as update_error:
                     print(f"Warning: Could not update holiday hours balance field: {update_error}")
+            except FrappeClientError:
+                raise
             except Exception as e:
                 print(f"Error calculating holiday hours balance from table: {e}")
                 calculated_initial_holiday_hours = "00:00"
         else:
-            # No report_start_date, sum all allocations
+            # No report_start_date, sum all allocations (still enforce non-overlapping windows)
             try:
+                norm = _normalize_holiday_allocation_rows(holiday_hours_table)
+                _validate_holiday_allocation_rows_no_overlap(norm)
                 from utils import decimal_hours_to_hhmmss
+
                 total_allocated = 0.0
                 for record in holiday_hours_table:
                     holiday_hours = record.get("holiday_hours")
@@ -669,6 +674,8 @@ def fetch_employee_time_config(
                         except (ValueError, TypeError):
                             continue
                 calculated_initial_holiday_hours = decimal_hours_to_hhmmss(total_allocated) if total_allocated > 0 else "00:00"
+            except FrappeClientError:
+                raise
             except Exception:
                 calculated_initial_holiday_hours = "00:00"
     else:
@@ -1225,41 +1232,217 @@ def calculate_historical_overtime_balance(
     return decimal_hours_to_hhmmss(running_overtime_balance)
 
 
+def _parse_holiday_table_date(val) -> Optional[date]:
+    """Parse optional start_date / end_date from custom_initial_holiday_hours child rows."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    s = str(val).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _merge_inclusive_date_intervals(
+    intervals: List[Tuple[date, date]],
+) -> List[Tuple[date, date]]:
+    """Merge inclusive [start, end] date ranges (overlap or adjacent days)."""
+    if not intervals:
+        return []
+    intervals = sorted(intervals, key=lambda x: (x[0], x[1]))
+    merged: List[Tuple[date, date]] = [intervals[0]]
+    for s, e in intervals[1:]:
+        ps, pe = merged[-1]
+        if s <= pe + timedelta(days=1):
+            merged[-1] = (ps, max(pe, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _gaps_in_inclusive_range(
+    range_start: date,
+    range_end: date,
+    merged_blockers: List[Tuple[date, date]],
+) -> List[Tuple[date, date]]:
+    """
+    Return maximal inclusive sub-ranges of [range_start, range_end] not covered by
+    merged_blockers (each [bs, be] inclusive, already merged).
+    """
+    gaps: List[Tuple[date, date]] = []
+    cur = range_start
+    for bs, be in merged_blockers:
+        if bs > range_end:
+            break
+        b0 = max(bs, range_start)
+        b1 = min(be, range_end)
+        if b0 > b1:
+            continue
+        if cur < b0:
+            gaps.append((cur, b0 - timedelta(days=1)))
+        cur = max(cur, b1 + timedelta(days=1))
+        if cur > range_end:
+            return gaps
+    if cur <= range_end:
+        gaps.append((cur, range_end))
+    return gaps
+
+
+def _explicit_holiday_intervals_from_table(
+    holiday_hours_table: List[Dict],
+) -> List[Tuple[date, date]]:
+    """All inclusive windows from rows where both start and end are set (any row order)."""
+    out: List[Tuple[date, date]] = []
+    for record in holiday_hours_table:
+        ws = _parse_holiday_table_date(record.get("start_date") or record.get("custom_start_date"))
+        we = _parse_holiday_table_date(record.get("end_date") or record.get("custom_end_date"))
+        if not ws or not we:
+            continue
+        if ws > we:
+            ws, we = we, ws
+        out.append((ws, we))
+    return _merge_inclusive_date_intervals(out)
+
+
+def _normalize_holiday_allocation_rows(
+    holiday_hours_table: List[Dict],
+) -> List[Dict[str, Any]]:
+    """
+    Build normalized allocation entries.
+
+    - If both ``start_date`` and ``end_date`` are set, they define the window; ``canonical_year``
+      is ``start_date.year``.
+    - If only ``year`` is set (no dates), the default window is Jan 1–Dec 31 of that year, **minus**
+      any dates covered by **other** rows that have explicit start/end (so a year-only row shares
+      the year with dated rows without overlapping).
+    """
+    merged_explicit = _explicit_holiday_intervals_from_table(holiday_hours_table)
+    rows: List[Dict[str, Any]] = []
+    for record in holiday_hours_table:
+        try:
+            holiday_hours = record.get("holiday_hours")
+            if holiday_hours is None:
+                continue
+            hours = float(holiday_hours)
+        except (ValueError, TypeError):
+            continue
+
+        year_str = record.get("year")
+        table_year: Optional[int] = None
+        if year_str is not None and str(year_str).strip():
+            try:
+                table_year = int(year_str) if isinstance(year_str, str) else int(year_str)
+            except (ValueError, TypeError):
+                table_year = None
+
+        ws = _parse_holiday_table_date(record.get("start_date") or record.get("custom_start_date"))
+        we = _parse_holiday_table_date(record.get("end_date") or record.get("custom_end_date"))
+
+        if ws and we:
+            if ws > we:
+                ws, we = we, ws
+            eff_start, eff_end = ws, we
+            canonical_year = ws.year
+            rows.append(
+                {
+                    "hours": hours,
+                    "eff_start": eff_start,
+                    "eff_end": eff_end,
+                    "canonical_year": canonical_year,
+                }
+            )
+        elif table_year is not None:
+            y0 = date(table_year, 1, 1)
+            y1 = date(table_year, 12, 31)
+            blockers_in_year: List[Tuple[date, date]] = []
+            for bs, be in merged_explicit:
+                s = max(bs, y0)
+                e = min(be, y1)
+                if s <= e:
+                    blockers_in_year.append((s, e))
+            blockers_in_year = _merge_inclusive_date_intervals(blockers_in_year)
+            gaps = _gaps_in_inclusive_range(y0, y1, blockers_in_year)
+            if not gaps:
+                if hours > 0:
+                    raise FrappeClientError(
+                        f"Holiday allocation for calendar year {table_year} ({hours} h) has no "
+                        "dates left: other `custom_initial_holiday_hours` rows with start_date and "
+                        "end_date cover the entire year. Remove or narrow those date ranges, or "
+                        "remove this year-only row."
+                    )
+                continue
+            for eff_start, eff_end in gaps:
+                rows.append(
+                    {
+                        "hours": hours,
+                        "eff_start": eff_start,
+                        "eff_end": eff_end,
+                        "canonical_year": table_year,
+                    }
+                )
+        else:
+            continue
+
+    return rows
+
+
+def _validate_holiday_allocation_rows_no_overlap(norm_rows: List[Dict[str, Any]]) -> None:
+    """Raise FrappeClientError if any two rows cover the same calendar day (inclusive windows)."""
+    if len(norm_rows) < 2:
+        return
+    for i in range(len(norm_rows)):
+        a = norm_rows[i]
+        for j in range(i + 1, len(norm_rows)):
+            b = norm_rows[j]
+            if a["eff_start"] <= b["eff_end"] and b["eff_start"] <= a["eff_end"]:
+                raise FrappeClientError(
+                    "Overlapping holiday allocation rows in Employee "
+                    "`custom_initial_holiday_hours`: "
+                    f"row {i + 1} ({a['eff_start']} – {a['eff_end']}, {a['hours']} h) and "
+                    f"row {j + 1} ({b['eff_start']} – {b['eff_end']}, {b['hours']} h) "
+                    "share at least one day. Adjust start_date/end_date (or year-only ranges) "
+                    "so windows do not overlap, then regenerate the report."
+                )
+
+
 def compute_holiday_balance_by_year_at_report_start(
     employee_code: str,
     holiday_hours_table: List[Dict],
     standard_work_hours_hhmm: str = "08:00",
     before_date: Optional[date] = None,
     report_end_date: Optional[date] = None,
-) -> Tuple[Dict[int, float], Dict[int, float]]:
+) -> Tuple[Dict[int, float], Dict[int, float], List[Dict[str, Any]]]:
     """
-    Per-year allocation and remaining holiday hours at report start (before before_date),
-    using the same rules as the combined total in calculate_holiday_hours_balance_from_table.
+    Per-year allocation and remaining holiday hours at report start (before before_date).
+
+    Child rows may set optional ``start_date`` and ``end_date``. When both are set, they define
+    the allocation window and override the calendar ``year`` for matching leave; leave on date D
+    debits the first matching row in table order. If only ``year`` is used (dates blank), the
+    window is that full calendar year **excluding** dates covered by rows that set both start and
+    end dates (so a dated 0 h row can define April–December without overlapping a year-only row).
 
     Returns:
-        (allocations_by_year_in_scope, balance_by_year_at_start)
-        Empty dicts if the table has no usable rows.
+        (allocations_by_year_in_scope, balance_by_year_at_start, holiday_windows)
+        ``holiday_windows`` is an ordered list of dicts with ``eff_start``, ``eff_end`` (dates),
+        ``hours``, ``opening_balance`` (remaining hours for that window at report start) and
+        ``canonical_year``. Used to reset the running holiday column when the active window changes (e.g. April 1 new row with
+        0 h). Empty dicts / list if there are no usable rows.
     """
     from utils import hhmm_to_decimal
 
-    allocations_by_year: Dict[int, float] = {}
-    for record in holiday_hours_table:
-        try:
-            year_str = record.get("year")
-            holiday_hours = record.get("holiday_hours")
+    norm_rows = _normalize_holiday_allocation_rows(holiday_hours_table)
+    if not norm_rows:
+        return {}, {}, []
 
-            if year_str and holiday_hours is not None:
-                try:
-                    year = int(year_str) if isinstance(year_str, str) else int(year_str)
-                    hours = float(holiday_hours)
-                    allocations_by_year[year] = hours
-                except (ValueError, TypeError):
-                    continue
-        except Exception:
-            continue
-
-    if not allocations_by_year:
-        return {}, {}
+    _validate_holiday_allocation_rows_no_overlap(norm_rows)
 
     if before_date and report_end_date:
         max_year = max(before_date.year, report_end_date.year)
@@ -1269,6 +1452,20 @@ def compute_holiday_balance_by_year_at_report_start(
         max_year = report_end_date.year
     else:
         max_year = None
+
+    def row_in_scope(r: Dict[str, Any]) -> bool:
+        if max_year is None:
+            return True
+        return r["canonical_year"] <= max_year
+
+    allocations_by_year: Dict[int, float] = defaultdict(float)
+    for r in norm_rows:
+        if not row_in_scope(r):
+            continue
+        allocations_by_year[r["canonical_year"]] += r["hours"]
+
+    if not allocations_by_year:
+        return {}, {}, []
 
     base_url, _, _ = _get_base_config()
     url = f"{base_url}/api/resource/Attendance"
@@ -1300,30 +1497,16 @@ def compute_holiday_balance_by_year_at_report_start(
         raise FrappeClientError(f"Unexpected response format from Frappe: {data}")
 
     attendance_records = data["data"]
-    balance_by_year: Dict[int, float] = {}
+    balance_by_year: Dict[int, float] = defaultdict(float)
+    used_per_row: List[float] = [0.0] * len(norm_rows)
 
-    # Scenario 5: no leave before report start — remaining per year is full allocation for
-    # every table year up to max_year (not only calendar years inside the report range),
-    # so a 2026-only report still gets 2025's row in balance_by_year for carry-forward.
     if not attendance_records and before_date:
-        if max_year is not None:
-            for y in sorted(allocations_by_year.keys()):
-                if y <= max_year:
-                    balance_by_year[y] = allocations_by_year[y]
-        else:
-            for y, hours in allocations_by_year.items():
-                balance_by_year[y] = hours
+        for r in norm_rows:
+            if not row_in_scope(r):
+                continue
+            balance_by_year[r["canonical_year"]] += r["hours"]
     else:
-        from utils import load_calendar_events
-
-        calendar_events = load_calendar_events()
-        calendar_events_date = {
-            pd.to_datetime(date_str, format="%Y-%m-%d").date(): event
-            for date_str, event in calendar_events.items()
-        }
-
         standard_hours_decimal = hhmm_to_decimal(standard_work_hours_hhmm)
-        used_hours_by_year: Dict[int, float] = {}
 
         for record in attendance_records:
             try:
@@ -1340,29 +1523,44 @@ def compute_holiday_balance_by_year_at_report_start(
                         continue
 
                 is_weekend = date_obj.weekday() >= 5
-                year = date_obj.year
                 leave_type = record.get("leave_type", "")
                 leave_type_str = str(leave_type).strip() if leave_type else ""
                 is_paid_holiday = leave_type_str == "Paid Holiday"
                 is_sick = leave_type_str == "Sick"
 
                 if is_paid_holiday and not is_sick and not is_weekend:
-                    if year not in used_hours_by_year:
-                        used_hours_by_year[year] = 0.0
-                    used_hours_by_year[year] += standard_hours_decimal
+                    for i, r in enumerate(norm_rows):
+                        if r["eff_start"] <= date_obj <= r["eff_end"]:
+                            if r["hours"] > 0:
+                                used_per_row[i] += standard_hours_decimal
+                            break
             except Exception:
                 continue
 
-        for year, initial_hours in allocations_by_year.items():
-            if max_year is not None and year > max_year:
+        for i, r in enumerate(norm_rows):
+            if not row_in_scope(r):
                 continue
-            used_hours = used_hours_by_year.get(year, 0.0)
-            balance_by_year[year] = initial_hours - used_hours
+            balance_by_year[r["canonical_year"]] += max(
+                0.0, r["hours"] - used_per_row[i]
+            )
 
-    alloc_in_scope = {
-        y: allocations_by_year[y] for y in balance_by_year if y in allocations_by_year
-    }
-    return alloc_in_scope, balance_by_year
+    holiday_windows: List[Dict[str, Any]] = []
+    for i, r in enumerate(norm_rows):
+        if not row_in_scope(r):
+            continue
+        opening = max(0.0, r["hours"] - used_per_row[i])
+        holiday_windows.append(
+            {
+                "eff_start": r["eff_start"],
+                "eff_end": r["eff_end"],
+                "hours": float(r["hours"]),
+                "opening_balance": opening,
+                "canonical_year": int(r["canonical_year"]),
+            }
+        )
+
+    alloc_in_scope = {y: allocations_by_year[y] for y in balance_by_year if y in allocations_by_year}
+    return alloc_in_scope, dict(balance_by_year), holiday_windows
 
 
 def fetch_holiday_year_balances_for_report(
@@ -1370,9 +1568,10 @@ def fetch_holiday_year_balances_for_report(
     report_start_date: date,
     report_end_date: date,
     standard_work_hours_hhmm: str,
-) -> Optional[Tuple[Dict[int, float], Dict[int, float]]]:
+) -> Optional[Tuple[Dict[int, float], Dict[int, float], List[Dict[str, Any]]]]:
     """
-    Load Employee holiday child table and return per-year allocation + balance at report start.
+    Load Employee holiday child table and return per-year allocation, balance at report start,
+    and ordered ``holiday_windows`` for running-balance resets between date windows.
     Returns None if there is no custom_initial_holiday_hours table data.
     """
     base_url, _, _ = _get_base_config()
@@ -1409,8 +1608,11 @@ def calculate_holiday_hours_balance_from_table(
     Calculate holiday hours balance from the custom_initial_holiday_hours table.
 
     The table contains child records with:
-    - year: select field (e.g., "2024", "2025")
-    - holiday_hours: float field (allocated hours for that year)
+    - year: when start_date/end_date are not both set, allocation applies to that calendar year
+      minus any dates covered by other rows with explicit start_date and end_date
+    - holiday_hours: float (allocated hours)
+    - optional start_date, end_date: when both set, define the allocation window (override year
+      for matching Paid Holiday leave); canonical bucket year is start_date.year
 
     Args:
         employee_code: Frappe Employee name/code
@@ -1425,18 +1627,27 @@ def calculate_holiday_hours_balance_from_table(
     """
     from utils import decimal_hours_to_hhmmss
 
-    alloc_in_scope, balance_by_year = compute_holiday_balance_by_year_at_report_start(
-        employee_code=employee_code,
-        holiday_hours_table=holiday_hours_table,
-        standard_work_hours_hhmm=standard_work_hours_hhmm,
-        before_date=before_date,
-        report_end_date=report_end_date,
+    alloc_in_scope, balance_by_year, holiday_windows = (
+        compute_holiday_balance_by_year_at_report_start(
+            employee_code=employee_code,
+            holiday_hours_table=holiday_hours_table,
+            standard_work_hours_hhmm=standard_work_hours_hhmm,
+            before_date=before_date,
+            report_end_date=report_end_date,
+        )
     )
     if not balance_by_year:
         return "00:00"
     from utils import holiday_opening_balance_combined_through_year
 
     if before_date:
+        active_opening = None
+        for w in holiday_windows:
+            if w["eff_start"] <= before_date <= w["eff_end"]:
+                active_opening = float(w["opening_balance"])
+                break
+        if active_opening is not None:
+            return decimal_hours_to_hhmmss(active_opening)
         opening = holiday_opening_balance_combined_through_year(
             balance_by_year,
             alloc_in_scope,

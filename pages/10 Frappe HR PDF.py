@@ -8,6 +8,7 @@ from streamlit_extras.switch_page_button import switch_page
 
 from employee_manager import fetch_overtime_payouts
 from frappe_client import (
+    FrappeClientError,
     fetch_employee_checkins,
     build_daily_checkins_from_employee_checkins,
     fetch_frappe_employees,
@@ -255,6 +256,9 @@ def main():
                         frappe_config["initial_overtime"] = calculated_overtime
                     except Exception:
                         pass
+        except FrappeClientError as e:
+            st.error(str(e))
+            frappe_config = {}
         except Exception as e:
             st.warning(f"Could not load time configuration from Frappe for {employee_code}: {e}")
             frappe_config = {}
@@ -787,13 +791,16 @@ def main():
                     end_date,
                     std_hhmm_for_holiday,
                 )
+            except FrappeClientError:
+                raise
             except Exception:
                 holiday_year_meta = None
 
             h_alloc = None
             h_bal = None
+            h_windows = None
             if holiday_year_meta:
-                h_alloc, h_bal = holiday_year_meta
+                h_alloc, h_bal, h_windows = holiday_year_meta
 
             df = compute_running_holiday_hours(
                 df,
@@ -803,6 +810,7 @@ def main():
                 initial_overtime_str,
                 holiday_allocations_by_year=h_alloc,
                 holiday_balance_by_year_at_report_start=h_bal,
+                holiday_allocation_windows=h_windows,
             )
             df = _apply_overtime_payout_deductions(df, in_period_payouts)
 
@@ -1274,6 +1282,8 @@ def main():
                 use_container_width=True,
             )
 
+        except FrappeClientError as e:
+            st.error(str(e))
         except Exception as e:
             st.error(f"Failed to generate PDF from Frappe HR: {e}")
 

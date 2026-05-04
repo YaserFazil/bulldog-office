@@ -142,7 +142,23 @@ def holiday_opening_balance_combined_through_year(
     Holiday hours available at the start of rows in calendar_year: sum of each prior
     year's balance-at-report-start plus this year's balance (matches staggered yearly
     pools; does not pull next year's allocation in early).
+
+    If the total allocation for ``calendar_year`` is zero, the opening is only that
+    year's balance (capped at zero): no hours carry in from earlier years, so a
+    zero-allocation Frappe row does not inherit leftover holiday from prior periods.
     """
+    alloc_cur = float(holiday_allocations_by_year.get(calendar_year, 0.0))
+    if alloc_cur <= 0:
+        return max(
+            0.0,
+            float(
+                holiday_balance_by_year_at_report_start.get(
+                    calendar_year,
+                    holiday_allocations_by_year.get(calendar_year, 0.0),
+                )
+            ),
+        )
+
     years_union = sorted(
         set(holiday_balance_by_year_at_report_start.keys())
         | set(holiday_allocations_by_year.keys())
@@ -168,6 +184,16 @@ def holiday_opening_balance_combined_through_year(
 # ----------------------
 # 7. New Helper: Compute a running holiday balance row-by-row
 # ----------------------
+def _holiday_window_list_index_for_date(holiday_allocation_windows, d):
+    """First window in table order containing date ``d`` (inclusive bounds)."""
+    if not holiday_allocation_windows:
+        return None
+    for i, w in enumerate(holiday_allocation_windows):
+        if w["eff_start"] <= d <= w["eff_end"]:
+            return i
+    return None
+
+
 def compute_running_holiday_hours(
     df,
     holiday_dates,
@@ -176,16 +202,18 @@ def compute_running_holiday_hours(
     initial_overtime="00:00",
     holiday_allocations_by_year=None,
     holiday_balance_by_year_at_report_start=None,
+    holiday_allocation_windows=None,
 ):
     # Ensure DataFrame is sorted by Date ascending.
     df_sorted = df.sort_values(by="Date").copy()
 
-    use_per_year_holiday_buckets = (
+    use_window_buckets = bool(holiday_allocation_windows)
+    use_per_year_holiday_buckets = use_window_buckets or (
         holiday_allocations_by_year is not None
         and holiday_balance_by_year_at_report_start is not None
         and len(holiday_balance_by_year_at_report_start) > 0
     )
-
+    
     # Initialize running_overtime based on initial_overtime
     if initial_overtime != "00:00":
         running_overtime = hhmm_to_decimal(initial_overtime)
@@ -193,50 +221,113 @@ def compute_running_holiday_hours(
         # Start with 0 when initial_overtime is "00:00"
         # The first row will be processed normally and its worked hours (with multiplication) will be added
         running_overtime = 0.0
-
+    
     overtime_list = []
     holiday_hours_list = []
     remaining_holiday_hours = holiday_hours_count if holiday_hours_count else 0  # Initialize holiday hours count
     remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
     prev_calendar_year = None
+    prev_window_idx = None
     # Process each row in chronological order.
     for idx, row in df_sorted.iterrows():
         row_date = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
         row_date_obj = pd.to_datetime(row["Date"]).date()
-        
+
         # Initialize overtime tracking from the first filled "Difference (Decimal)" if not set
         if running_overtime is None and row["Difference (Decimal)"] not in ["", None] and pd.notna(row["Difference (Decimal)"]):
             running_overtime = float(row["Difference (Decimal)"])
-        
+
         if running_overtime is not None:
             running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
         else:
             running_overtime_str = "00:00"
 
+        wi = None
+        if use_per_year_holiday_buckets and use_window_buckets:
+            wi = _holiday_window_list_index_for_date(
+                holiday_allocation_windows, row_date_obj
+            )
+
         if use_per_year_holiday_buckets:
-            if prev_calendar_year is None:
-                remaining_holiday_hours = holiday_opening_balance_combined_through_year(
-                    holiday_balance_by_year_at_report_start,
-                    holiday_allocations_by_year,
-                    row_date_obj.year,
+            if use_window_buckets:
+                if wi != prev_window_idx:
+                    if wi is None:
+                        remaining_holiday_hours = 0.0
+                    elif prev_window_idx is None:
+                        w0 = holiday_allocation_windows[wi]
+                        if float(w0["hours"]) <= 0:
+                            remaining_holiday_hours = float(w0["opening_balance"])
+                        else:
+                            remaining_holiday_hours = (
+                                holiday_opening_balance_combined_through_year(
+                                    holiday_balance_by_year_at_report_start,
+                                    holiday_allocations_by_year,
+                                    row_date_obj.year,
+                                )
+                            )
+                    else:
+                        w = holiday_allocation_windows[wi]
+                        prev_w = holiday_allocation_windows[prev_window_idx]
+                        cy = int(w["canonical_year"])
+                        prev_cy = int(prev_w["canonical_year"])
+                        base = float(w["opening_balance"])
+                        if cy == prev_cy:
+                            remaining_holiday_hours = base
+                        elif cy > prev_cy:
+                            alloc_y = float(
+                                holiday_allocations_by_year.get(cy, 0.0)
+                            )
+                            bal_y = float(
+                                holiday_balance_by_year_at_report_start.get(
+                                    cy,
+                                    holiday_allocations_by_year.get(cy, 0.0),
+                                )
+                            )
+                            if alloc_y <= 0:
+                                remaining_holiday_hours = max(0.0, bal_y)
+                            else:
+                                remaining_holiday_hours = (
+                                    float(remaining_holiday_hours) + bal_y
+                                )
+                        else:
+                            remaining_holiday_hours = base
+                    prev_window_idx = wi
+                remaining_holiday_hours_str = decimal_hours_to_hhmmss(
+                    remaining_holiday_hours
                 )
-            elif row_date_obj.year != prev_calendar_year:
-                # New calendar year: carry prior balance, then add this year's opening balance
-                # (allocation minus leave used before report start), consistent with Frappe table logic.
-                remaining_holiday_hours = remaining_holiday_hours + float(
-                    holiday_balance_by_year_at_report_start.get(
+            else:
+                if prev_calendar_year is None:
+                    remaining_holiday_hours = holiday_opening_balance_combined_through_year(
+                        holiday_balance_by_year_at_report_start,
+                        holiday_allocations_by_year,
                         row_date_obj.year,
-                        holiday_allocations_by_year.get(row_date_obj.year, 0.0),
                     )
+                elif row_date_obj.year != prev_calendar_year:
+                    # New calendar year: add this year's balance-at-start. If this year has no
+                    # allocation (0 h in Frappe), reset to that balance only—do not carry
+                    # remaining holiday from the previous calendar year.
+                    new_year = row_date_obj.year
+                    alloc_y = float(holiday_allocations_by_year.get(new_year, 0.0))
+                    bal_y = float(
+                        holiday_balance_by_year_at_report_start.get(
+                            new_year,
+                            holiday_allocations_by_year.get(new_year, 0.0),
+                        )
+                    )
+                    if alloc_y <= 0:
+                        remaining_holiday_hours = max(0.0, bal_y)
+                    else:
+                        remaining_holiday_hours = float(remaining_holiday_hours) + bal_y
+                prev_calendar_year = row_date_obj.year
+                remaining_holiday_hours_str = decimal_hours_to_hhmmss(
+                    remaining_holiday_hours
                 )
-            prev_calendar_year = row_date_obj.year
-            remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
 
         # If this row is a holiday event date...
         if row_date in holiday_dates or row["Holiday"] == "sick" or row["Holiday"] == "Sick":
             work_str = row["Work Time"]
             worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
-            
+
             # Reward only if employee worked.
             if worked > 0:
                 multiplication = float(row["Multiplication"])
@@ -249,7 +340,7 @@ def compute_running_holiday_hours(
             work_str = row["Work Time"]
             worked = hhmm_to_decimal(work_str) if work_str and work_str not in ["00:00", "00:00:00"] else 0
             standard_work_hours = hhmm_to_decimal(row["Standard Time"])
-            
+
             if worked < standard_work_hours:
                 not_worked_hours = standard_work_hours - worked
                 #  Unsum not worked hours from overtime balance
@@ -258,12 +349,12 @@ def compute_running_holiday_hours(
                     running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
             elif worked > standard_work_hours:
                 extra_hours = float(row["Difference (Decimal)"]) * float(row["Multiplication"])
-                
+
                 # Sum extra hours to overtime balance
                 if running_overtime is not None:
                     running_overtime = running_overtime + extra_hours
                     running_overtime_str = decimal_hours_to_hhmmss(running_overtime)
-        
+
         # Decrease holiday hours count ONLY for "Paid Holiday" leave types
         # This matches the logic in calculate_holiday_hours_balance_from_table which only counts "Paid Holiday" leave types
         # Other holidays (from Holiday column, public holidays, etc.) should NOT deduct from holiday hours
@@ -284,7 +375,22 @@ def compute_running_holiday_hours(
         if should_deduct:
             # Convert standard work hours to decimal for holiday hours deduction
             standard_hours = hhmm_to_decimal(row["Standard Time"])
-            remaining_holiday_hours = float(remaining_holiday_hours) - standard_hours
+            if use_per_year_holiday_buckets:
+                if use_window_buckets:
+                    if wi is not None and float(
+                        holiday_allocation_windows[wi]["hours"]
+                    ) > 0:
+                        remaining_holiday_hours = float(remaining_holiday_hours) - standard_hours
+                else:
+                    alloc_y = float(
+                        holiday_allocations_by_year.get(row_date_obj.year, 0.0)
+                    )
+                    if alloc_y <= 0:
+                        pass
+                    else:
+                        remaining_holiday_hours = float(remaining_holiday_hours) - standard_hours
+            else:
+                remaining_holiday_hours = float(remaining_holiday_hours) - standard_hours
             remaining_holiday_hours_str = decimal_hours_to_hhmmss(remaining_holiday_hours)
         
         holiday_hours_list.append(remaining_holiday_hours_str)
