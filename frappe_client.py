@@ -82,6 +82,59 @@ def fetch_frappe_employees(limit: int = 1000) -> List[Dict]:
     return data["data"]
 
 
+def normalize_employee_name_for_match(name: str) -> str:
+    """
+    Normalize a person name for comparing CSV / Mongo / Frappe employee_name fields.
+    Strips parenthetical IDs (e.g. "Name (3)"), collapses whitespace, lowercases.
+    """
+    if not name or not str(name).strip():
+        return ""
+    base = str(name).split("(")[0].strip()
+    return " ".join(base.split()).lower()
+
+
+def resolve_frappe_employee_code(
+    display_name: str,
+    mongo_username: Optional[str] = None,
+) -> str:
+    """
+    Map CSV header name and optional Mongo login to Frappe Employee.name (document ID).
+
+    Frappe APIs use Employee.name in URLs and Link fields, not employee_name.
+    Mongo often stores a short username (e.g. "Emmanuel") that is not a valid
+    Employee.name, while the CSV has the full name that matches Frappe's employee_name.
+
+    Resolution order:
+      1. Employee whose employee_name matches display_name (normalized)
+      2. Employee whose name equals mongo_username (when it is already a valid ID)
+      3. mongo_username, else trimmed display_name (legacy / best-effort)
+    """
+    dn = normalize_employee_name_for_match(display_name)
+    mongo = (mongo_username or "").strip() or None
+
+    employees: List[Dict] = []
+    try:
+        employees = fetch_frappe_employees(limit=2000)
+    except Exception:
+        pass
+
+    for emp in employees:
+        if dn and normalize_employee_name_for_match(emp.get("employee_name") or "") == dn:
+            code = emp.get("name")
+            if code:
+                return str(code)
+
+    if mongo:
+        for emp in employees:
+            if emp.get("name") == mongo:
+                return mongo
+
+    if mongo:
+        return mongo
+
+    return (display_name or "").split("(")[0].strip()
+
+
 def _add_hhmm_times(time1: str, time2: str) -> str:
     """
     Add two HH:MM time values (handles negative values like "-15:32").

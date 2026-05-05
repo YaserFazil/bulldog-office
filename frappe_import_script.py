@@ -20,7 +20,14 @@ import json
 import os
 from dotenv import load_dotenv
 
-from frappe_client import _get_base_config, _build_auth_headers, FrappeClientError, fetch_employee_time_config, _float_hours_to_hhmm
+from frappe_client import (
+    _get_base_config,
+    _build_auth_headers,
+    FrappeClientError,
+    fetch_employee_time_config,
+    _float_hours_to_hhmm,
+    resolve_frappe_employee_code,
+)
 import importlib.util
 import sys
 import os
@@ -211,7 +218,7 @@ def fill_missing_weekends_holidays(
     end_date: date,
     existing_dates: set,
     calendar_events: Dict,
-    employee_username: str,
+    frappe_employee_code: str,
 ) -> List[Dict]:
     """
     Generate Attendance records for weekends and holidays that are missing from the CSV.
@@ -230,7 +237,7 @@ def fill_missing_weekends_holidays(
                 # Create attendance record for weekend/holiday
                 attendance_records.append({
                     "date": current_date,
-                    "employee": employee_username,
+                    "employee": frappe_employee_code,
                     "status": "On Leave",
                     "leave_type": "Paid Holiday" if holiday_type == "Holiday" else None,
                     "is_weekend_or_holiday": True,
@@ -466,6 +473,7 @@ def generate_frappe_records_from_ngtecho_csv(
     parsed_data = parse_ngtecotime_csv(file_content)
     employee_full_name = parsed_data['employee']
     employee_username = get_username_by_full_name(employee_full_name)
+    frappe_employee_code = resolve_frappe_employee_code(employee_full_name, employee_username)
     
     # Load calendar events for holiday detection
     calendar_events = load_calendar_events()
@@ -484,18 +492,18 @@ def generate_frappe_records_from_ngtecho_csv(
     
     try:
         from frappe_client import fetch_employee_shifts_by_period, get_standard_work_hours_for_date
-        shifts_by_period = fetch_employee_shifts_by_period(employee_username)
+        shifts_by_period = fetch_employee_shifts_by_period(frappe_employee_code)
         
         # Pre-fetch default shift hours as fallback
         try:
-            time_config = fetch_employee_time_config(employee_username)
+            time_config = fetch_employee_time_config(frappe_employee_code)
             default_shift_hours_str = time_config.get('standard_work_hours')
             if default_shift_hours_str:
                 default_shift_hours = hhmm_to_decimal(default_shift_hours_str)
         except Exception:
             pass
     except Exception as e:
-        print(f"Warning: Could not fetch shifts_by_period for {employee_username}: {e}")
+        print(f"Warning: Could not fetch shifts_by_period for {frappe_employee_code}: {e}")
         shifts_by_period = []
     
     # Cache for standard work hours by date (to avoid repeated API calls)
@@ -700,7 +708,7 @@ def generate_frappe_records_from_ngtecho_csv(
                 datetime_str = date_obj.strftime('%Y-%m-%d') + f' {hours:02d}:{minutes:02d}:00'
                 
                 checkin_record = {
-                    'Employee': employee_username,
+                    'Employee': frappe_employee_code,
                     'Time': datetime_str,
                     'Log Type': 'IN'
                 }
@@ -724,7 +732,7 @@ def generate_frappe_records_from_ngtecho_csv(
                 datetime_str = date_obj.strftime('%Y-%m-%d') + f' {hours:02d}:{minutes:02d}:00'
                 
                 checkin_record = {
-                    'Employee': employee_username,
+                    'Employee': frappe_employee_code,
                     'Time': datetime_str,
                     'Log Type': 'OUT'
                 }
@@ -764,7 +772,7 @@ def generate_frappe_records_from_ngtecho_csv(
         # - User explicitly marked it
         if has_work_times or not is_weekend_holiday or is_user_marked:
             attendance_record = {
-                'Employee': employee_username,
+                'Employee': frappe_employee_code,
                 'Attendance Date': date_obj.strftime('%Y-%m-%d'),  # Use YYYY-MM-DD format for Frappe HR
                 'Status': attendance_status,
             }
@@ -785,12 +793,12 @@ def generate_frappe_records_from_ngtecho_csv(
                 end_date = datetime.strptime(period_parts[1], '%Y%m%d').date()
                 
                 missing_records = fill_missing_weekends_holidays(
-                    start_date, end_date, processed_dates, calendar_events, employee_username
+                    start_date, end_date, processed_dates, calendar_events, frappe_employee_code
                 )
                 
                 for missing_rec in missing_records:
                     attendance_records.append({
-                        'Employee': employee_username,
+                        'Employee': frappe_employee_code,
                         'Attendance Date': missing_rec['date'].strftime('%Y-%m-%d'),  # Use YYYY-MM-DD format for Frappe HR
                         'Status': missing_rec['status'],
                         'Leave Type': missing_rec.get('leave_type'),

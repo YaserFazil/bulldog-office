@@ -6,6 +6,7 @@ from streamlit_extras.switch_page_button import switch_page
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from frappe_client import resolve_frappe_employee_code
 
 # Load environment variables and setup MongoDB
 load_dotenv()
@@ -193,8 +194,9 @@ def convert_to_frappe_format(parsed_data, include_ids=True):
     frappe_records = []
     employee_full_name = parsed_data['employee']
     
-    # Look up username2 (or username) from MongoDB by full name
+    # Look up username2 (or username) from MongoDB by full name; map CSV full name to Frappe Employee.name
     employee_username = get_username_by_full_name(employee_full_name)
+    frappe_employee_code = resolve_frappe_employee_code(employee_full_name, employee_username)
     
     sequence = 1
     
@@ -219,7 +221,7 @@ def convert_to_frappe_format(parsed_data, include_ids=True):
                 datetime_str = date_obj.strftime('%d-%m-%Y') + f' {hours:02d}:{minutes:02d}:00'
                 
                 frappe_record = {
-                    'Employee': employee_username,
+                    'Employee': frappe_employee_code,
                     'Time': datetime_str,
                     'Log Type': 'IN'
                 }
@@ -246,7 +248,7 @@ def convert_to_frappe_format(parsed_data, include_ids=True):
                 datetime_str = date_obj.strftime('%d-%m-%Y') + f' {hours:02d}:{minutes:02d}:00'
                 
                 frappe_record = {
-                    'Employee': employee_username,
+                    'Employee': frappe_employee_code,
                     'Time': datetime_str,
                     'Log Type': 'OUT'
                 }
